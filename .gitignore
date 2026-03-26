@@ -1,0 +1,47 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test, lint, and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling and local workspace caches
+.cache/
+.claude/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Pipeline runtime outputs
+output/
+results/
+results_debug/
+results_overlay_test/
+
+data/
+
+# Generated logs and temporary diagnostics
+*.log
+*.tmp

@@ -1,0 +1,33 @@
+[project]
+name = "hilti-slam-pipeline"
+version = "0.1.0"
+description = "Dagger pipeline for Hilti-Trimble SLAM Challenge 2026"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "dagger-io>=0.9.0",
+    "anyio>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+slam-pipeline = "pipeline:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
