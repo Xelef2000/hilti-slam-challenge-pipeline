@@ -47,8 +47,8 @@ class WindowsSamStage(Stage):
 set -euo pipefail
 mkdir -p /output
 cp -a /input/. /output/
-export TEAM6_ROOT=/opt/team6
-export PYTHONPATH=/opt/team6/GroundingDINO:/opt/team6/sam3:/opt/team6/py360convert:$PYTHONPATH
+export WINDOWS_PIPELINE_ROOT=/opt/windows_pipeline
+export PYTHONPATH=/opt/windows_pipeline/py360convert:$PYTHONPATH
 python /opt/pipeline_scripts/windows/run_sam3.py '{runtime_args}'
 """
 
