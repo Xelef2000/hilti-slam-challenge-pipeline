@@ -4,13 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Dagger-orchestrated pipeline for the Hilti-Trimble SLAM Challenge 2026. Processes ROS2 bags containing dual fisheye camera images and IMU data from construction sites to estimate camera trajectories.
+Python-orchestrated container pipeline for the Hilti-Trimble SLAM Challenge 2026. Processes ROS2 bags containing dual fisheye camera images and IMU data from construction sites to estimate camera trajectories.
 
-**Key Technologies**: Python 3.10+, Dagger, ROS 2 Jazzy (containerized), OpenVINS
+**Key Technologies**: Python 3.10+, Docker/Apptainer/Singularity, ROS 2 Jazzy (containerized), OpenVINS
 
 ## Quick Start
 
 ```bash
+# Optional but recommended
+python -m venv .venv
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 
@@ -59,8 +63,11 @@ Host: Results exported to --output directory
 
 1. Create `stages/my_stage.py`:
 ```python
+from pathlib import Path
+
+from runtime_backend import ExecutionSpec
+
 from .base import Stage, StageConfig
-import dagger
 
 class MyStage(Stage):
     @property
@@ -71,11 +78,24 @@ class MyStage(Stage):
     def description(self) -> str:
         return "My custom processing"
 
-    async def run(self, container, input_dir, config) -> dagger.Directory:
-        # Your processing logic
-        result = container.with_mounted_directory("/input", input_dir)
-        # ... run commands ...
-        return result.directory("/output")
+    def run(self, runner, input_dir: Path, config: StageConfig) -> Path:
+        wrapper = \"\"\"#!/bin/bash
+set +e
+mkdir -p /output
+cp -a /input/. /output/
+echo "example" > /output/stage_marker.txt
+echo "0" > /output/my_stage.status
+\"\"\"
+        return runner.run_stage(
+            container_profile=self.container_profile,
+            input_dir=input_dir,
+            config=config,
+            spec=ExecutionSpec(
+                stage_name=self.name,
+                command=["/bin/bash", "/stage_runtime/my_stage.sh"],
+                files={"my_stage.sh": wrapper},
+            ),
+        )
 ```
 
 2. Register in `stages/__init__.py`:
@@ -107,7 +127,7 @@ python pipeline.py --stages slam --input "data/floor_*/*/rosbag"
 
 ## Container Details
 
-The Dagger pipeline builds a container with:
+The pipeline builds containers with:
 - Base: `ros:jazzy-ros-base-noble` (Ubuntu 24.04)
 - Dependencies: Eigen3, Boost, Ceres, OpenCV, TurboJPEG
 - Workspace: `/root/ros2_ws/` with challenge tools and OpenVINS

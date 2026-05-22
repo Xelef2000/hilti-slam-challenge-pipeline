@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `pipeline.py` is the CLI entrypoint and Dagger orchestrator.
+- `pipeline.py` is the CLI entrypoint and Python container-runtime orchestrator.
 - `stages/` contains modular pipeline stages (`stitch.py`, `convert.py`, `slam.py`) plus `base.py` and registry wiring in `__init__.py`.
 - `data/` holds example ROS2 bag inputs (mounted into containers; not copied).
 - `results/` is the default output area for exported artifacts.
@@ -29,4 +29,4 @@
 
 ## Data & Configuration Notes
 - Inputs are ROS2 bags under `data/<site>/<date>/run_<n>/rosbag`.
-- Containers are built via Dagger; data is mounted at runtime, so avoid writing into `data/` during processing.
+- Containers are built from the repo Dockerfiles and run via Docker or Apptainer/Singularity; data is mounted at runtime, so avoid writing into `data/` during processing.
