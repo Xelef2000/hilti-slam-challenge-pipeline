@@ -248,6 +248,7 @@ class ContainerBackend:
                 self.apptainer_bin,
                 "build",
                 "--force",
+                "--ignore-fakeroot-command",
                 str(profile.apptainer_image),
                 str(profile.apptainer_def),
             ]
