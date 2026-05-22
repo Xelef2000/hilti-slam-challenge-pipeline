@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: ros:jazzy-ros-base-noble
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        git python3-pip python3-colcon-common-extensions \
+        libeigen3-dev libboost-all-dev libceres-dev \
+        libopencv-dev libopencv-contrib-dev \
+        ros-jazzy-cv-bridge ros-jazzy-image-transport \
+        ros-jazzy-tf2-ros ros-jazzy-tf2-geometry-msgs \
+        ros-jazzy-pcl-conversions ros-jazzy-tf2-eigen \
+        ros-jazzy-message-filters ros-jazzy-rosbag2-py \
+        ros-jazzy-std-srvs ros-jazzy-nav-msgs \
+        python3-opencv python3-numpy python3-yaml \
+        libturbojpeg0-dev \
+        && pip3 install --break-system-packages PyTurboJPEG \
+        && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /root/ros2_ws/src
+    cd /root/ros2_ws/src
+    git clone --depth=1 https://github.com/Hilti-Research/hilti-trimble-slam-challenge-2026.git
+    git clone --depth=1 https://github.com/Hilti-Research/open_vins.git
+
+    cd /root/ros2_ws
+    /bin/bash -c "source /opt/ros/jazzy/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release"
+    mkdir -p /workspace
+

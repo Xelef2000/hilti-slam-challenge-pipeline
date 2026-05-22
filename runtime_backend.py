@@ -6,10 +6,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 ROOT = Path(__file__).parent.resolve()
 CACHE_DIR = ROOT / ".cache"
@@ -21,6 +19,7 @@ class ProfileImage:
     profile: str
     docker_image: str
     dockerfile: Path
+    apptainer_def: Path
     docker_archive: Path
     apptainer_image: Path
 
@@ -30,6 +29,7 @@ PROFILE_IMAGES = {
         profile="ros",
         docker_image="slam-workspace:latest",
         dockerfile=ROOT / "Dockerfile.workspace",
+        apptainer_def=ROOT / "container_defs" / "workspace.def",
         docker_archive=CACHE_DIR / "slam-workspace.tar",
         apptainer_image=CACHE_DIR / "slam-workspace.sif",
     ),
@@ -37,6 +37,7 @@ PROFILE_IMAGES = {
         profile="windows_cpu",
         docker_image="windows-pipeline-cpu:latest",
         dockerfile=ROOT / "Dockerfile.windows.cpu",
+        apptainer_def=ROOT / "container_defs" / "windows_cpu.def",
         docker_archive=CACHE_DIR / "windows-pipeline-cpu.tar",
         apptainer_image=CACHE_DIR / "windows-pipeline-cpu.sif",
     ),
@@ -44,6 +45,7 @@ PROFILE_IMAGES = {
         profile="windows_gpu",
         docker_image="windows-pipeline-gpu:latest",
         dockerfile=ROOT / "Dockerfile.windows.gpu",
+        apptainer_def=ROOT / "container_defs" / "windows_gpu.def",
         docker_archive=CACHE_DIR / "windows-pipeline-gpu.tar",
         apptainer_image=CACHE_DIR / "windows-pipeline-gpu.sif",
     ),
@@ -235,35 +237,21 @@ class ContainerBackend:
             ]
             cwd = ROOT
         else:
-            print("[build] Docker not found; building Apptainer image directly from Dockerfile context")
-            with self._apptainer_build_context(profile) as build_context:
-                build_specs = [
-                    "dockerfile:.",
-                    "dockerfile://.",
-                    "buildkit:.",
-                    "buildkit://.",
-                ]
-                cwd = build_context
-                for build_spec in build_specs:
-                    command = [
-                        self.apptainer_bin,
-                        "build",
-                        "--force",
-                        str(profile.apptainer_image),
-                        build_spec,
-                    ]
-                    print(f"[build] Trying Apptainer Dockerfile build source: {build_spec}")
-                    result = subprocess.run(command, cwd=cwd, check=False)
-                    if result.returncode == 0:
-                        print(
-                            f"[build] Apptainer image built successfully: {profile.apptainer_image}"
-                        )
-                        return profile.apptainer_image
-
-                raise RuntimeError(
-                    "Failed to build Apptainer image from Dockerfile context. "
-                    "Tried dockerfile/buildkit source variants."
+            if not profile.apptainer_def.exists():
+                raise FileNotFoundError(
+                    f"Apptainer definition file not found: {profile.apptainer_def}"
                 )
+            print(
+                "[build] Docker not found; building Apptainer image from native definition file"
+            )
+            command = [
+                self.apptainer_bin,
+                "build",
+                "--force",
+                str(profile.apptainer_image),
+                str(profile.apptainer_def),
+            ]
+            cwd = ROOT
 
         result = subprocess.run(command, cwd=cwd, check=False)
         if result.returncode != 0:
@@ -328,18 +316,3 @@ class ContainerBackend:
             if shutil.which(candidate):
                 return candidate
         return None
-
-    @contextmanager
-    def _apptainer_build_context(self, profile: ProfileImage) -> Iterator[Path]:
-        context_dir = Path(tempfile.mkdtemp(prefix=f"{profile.profile}-build-", dir=self.cache_dir))
-        try:
-            dockerfile_link = context_dir / "Dockerfile"
-            dockerfile_link.symlink_to(profile.dockerfile.resolve())
-
-            third_party_dir = ROOT / "third_party"
-            if third_party_dir.exists():
-                (context_dir / "third_party").symlink_to(third_party_dir.resolve(), target_is_directory=True)
-
-            yield context_dir
-        finally:
-            shutil.rmtree(context_dir, ignore_errors=True)
