@@ -81,7 +81,7 @@ pip install -e ".[dev]"
 
 On first run, the pipeline builds `slam-workspace:latest` from `Dockerfile.workspace`. Docker runs use that image directly. Apptainer runs also build a cached `.sif` image from the Docker image, which can take several additional minutes.
 
-If Docker is not available, Apptainer mode falls back to building the `.sif` image directly from the repo Dockerfile context.
+If Docker is not available, Apptainer mode falls back to building the `.sif` image from native Apptainer definition files shipped in `container_defs/`.
 
 The first `window_*` run also builds either `windows-pipeline-cpu:latest` or `windows-pipeline-gpu:latest`. Apptainer runs additionally cache matching `.sif` images under `.cache/`.
 
