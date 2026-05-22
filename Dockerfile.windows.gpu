@@ -43,6 +43,20 @@ RUN python -m pip install --upgrade pip 'setuptools<81' wheel \
 
 COPY third_party/windows_pipeline /opt/windows_pipeline
 
+RUN python - <<'PY'
+from pathlib import Path
+from urllib.request import urlretrieve
+
+checkpoint = Path("/opt/windows_pipeline/GroundingDINO/weights/groundingdino_swint_ogc.pth")
+checkpoint.parent.mkdir(parents=True, exist_ok=True)
+if not checkpoint.exists():
+    urlretrieve(
+        "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
+        "v0.1.0-alpha/groundingdino_swint_ogc.pth",
+        checkpoint,
+    )
+PY
+
 RUN python -m pip install --no-build-isolation /opt/windows_pipeline/GroundingDINO \
     && python -m pip install --no-build-isolation /opt/windows_pipeline/sam3
 

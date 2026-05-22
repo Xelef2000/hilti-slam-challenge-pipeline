@@ -1,7 +1,7 @@
 Vendored runtime files for the standalone window-segmentation stages.
 
 Contents:
-- `GroundingDINO/`: trimmed source tree plus `groundingdino_swint_ogc.pth`
+- `GroundingDINO/`: trimmed source tree; checkpoint is downloaded on demand at runtime
 - `sam3/`: trimmed source tree needed by `build_sam3_image_model`
 - `py360convert/`: importable package used for mask rectification
 

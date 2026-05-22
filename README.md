@@ -40,6 +40,7 @@ third_party/windows_pipeline/ # Vendored GroundingDINO / SAM3 / py360convert
 - Python `>=3.10`
 - Docker (daemon running)
 - Network access for first workspace image build (clones challenge repos)
+- Network access for the first `window_dino` run (downloads the GroundingDINO checkpoint)
 - Recommended local environment: Conda env `3dvis`
 - For `window_*` GPU runs: NVIDIA GPU, `nvidia-smi`, and Docker GPU runtime support
 
@@ -79,6 +80,8 @@ pip install -e ".[dev]"
 On first run, the pipeline builds `slam-workspace:latest` from `Dockerfile.workspace`, then exports it to `.cache/slam-workspace.tar`. This can take several minutes.
 
 The first `window_*` run also builds either `windows-pipeline-cpu:latest` or `windows-pipeline-gpu:latest` and exports it to `.cache/`.
+
+For the transitional `window_*` stages, the first window-image build downloads the upstream GroundingDINO checkpoint into the image. The runtime also re-downloads it if the file is missing.
 
 These image-only stages are transitional. The planned ROS-native window stage will eventually live in a ROS-capable container profile instead of a separate file-processing image.
 

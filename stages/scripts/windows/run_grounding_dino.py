@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,13 @@ WINDOWS_PIPELINE_ROOT = Path(
     os.environ.get("WINDOWS_PIPELINE_ROOT", "/opt/windows_pipeline")
 )
 GROUNDING_DINO_ROOT = WINDOWS_PIPELINE_ROOT / "GroundingDINO"
+GROUNDING_DINO_CHECKPOINT_URL = (
+    "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
+    "v0.1.0-alpha/groundingdino_swint_ogc.pth"
+)
+GROUNDING_DINO_CHECKPOINT_PATH = (
+    GROUNDING_DINO_ROOT / "weights/groundingdino_swint_ogc.pth"
+)
 sys.path.insert(0, str(GROUNDING_DINO_ROOT))
 
 import groundingdino.datasets.transforms as T  # noqa: E402
@@ -54,6 +62,28 @@ def load_model(config_path: Path, checkpoint_path: Path, device: str):
     checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
     model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     return model.eval().to(device)
+
+
+def ensure_checkpoint(checkpoint_path: Path) -> Path:
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    if checkpoint_path.is_file():
+        return checkpoint_path
+
+    tmp_path = checkpoint_path.with_suffix(".pth.tmp")
+    print(
+        f"[window_dino] Downloading GroundingDINO checkpoint from "
+        f"{GROUNDING_DINO_CHECKPOINT_URL}"
+    )
+    try:
+        with urllib.request.urlopen(GROUNDING_DINO_CHECKPOINT_URL) as response:
+            with tmp_path.open("wb") as handle:
+                handle.write(response.read())
+        tmp_path.replace(checkpoint_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    return checkpoint_path
 
 
 def get_grounding_output(
@@ -114,7 +144,7 @@ def main() -> int:
         raise RuntimeError("Requested CUDA for GroundingDINO but no GPU is available.")
 
     config_path = GROUNDING_DINO_ROOT / "groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    checkpoint_path = WINDOWS_PIPELINE_ROOT / "GroundingDINO/weights/groundingdino_swint_ogc.pth"
+    checkpoint_path = ensure_checkpoint(GROUNDING_DINO_CHECKPOINT_PATH)
     image_pil, image = load_image(image_path)
     model = load_model(config_path, checkpoint_path, device)
     boxes, phrases = get_grounding_output(
