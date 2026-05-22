@@ -237,21 +237,33 @@ class ContainerBackend:
         else:
             print("[build] Docker not found; building Apptainer image directly from Dockerfile context")
             with self._apptainer_build_context(profile) as build_context:
-                command = [
-                    self.apptainer_bin,
-                    "build",
-                    "--force",
-                    str(profile.apptainer_image),
+                build_specs = [
                     "dockerfile:.",
+                    "dockerfile://.",
+                    "buildkit:.",
+                    "buildkit://.",
                 ]
                 cwd = build_context
-                result = subprocess.run(command, cwd=cwd, check=False)
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"Failed to build Apptainer image from Dockerfile: {profile.apptainer_image}"
-                    )
-                print(f"[build] Apptainer image built successfully: {profile.apptainer_image}")
-                return profile.apptainer_image
+                for build_spec in build_specs:
+                    command = [
+                        self.apptainer_bin,
+                        "build",
+                        "--force",
+                        str(profile.apptainer_image),
+                        build_spec,
+                    ]
+                    print(f"[build] Trying Apptainer Dockerfile build source: {build_spec}")
+                    result = subprocess.run(command, cwd=cwd, check=False)
+                    if result.returncode == 0:
+                        print(
+                            f"[build] Apptainer image built successfully: {profile.apptainer_image}"
+                        )
+                        return profile.apptainer_image
+
+                raise RuntimeError(
+                    "Failed to build Apptainer image from Dockerfile context. "
+                    "Tried dockerfile/buildkit source variants."
+                )
 
         result = subprocess.run(command, cwd=cwd, check=False)
         if result.returncode != 0:
