@@ -37,7 +37,7 @@ from typing import List
 import dagger
 
 from stages import registry
-from stages.base import StageConfig
+from stages.base import Stage, StageConfig
 
 # =============================================================================
 # Container Building
@@ -46,6 +46,12 @@ from stages.base import StageConfig
 WORKSPACE_IMAGE = "slam-workspace:latest"
 WORKSPACE_TARBALL = Path(__file__).parent / ".cache" / "slam-workspace.tar"
 DOCKERFILE_PATH = Path(__file__).parent / "Dockerfile.workspace"
+WINDOWS_CPU_IMAGE = "team6-windows-cpu:latest"
+WINDOWS_CPU_TARBALL = Path(__file__).parent / ".cache" / "team6-windows-cpu.tar"
+WINDOWS_CPU_DOCKERFILE = Path(__file__).parent / "Dockerfile.windows.cpu"
+WINDOWS_GPU_IMAGE = "team6-windows-gpu:latest"
+WINDOWS_GPU_TARBALL = Path(__file__).parent / ".cache" / "team6-windows-gpu.tar"
+WINDOWS_GPU_DOCKERFILE = Path(__file__).parent / "Dockerfile.windows.gpu"
 
 
 def ensure_workspace_image() -> None:
@@ -75,6 +81,43 @@ def ensure_workspace_image() -> None:
     print("[build] Workspace image built successfully")
 
 
+def ensure_docker_image(image_name: str, dockerfile_path: Path) -> None:
+    """Ensure a Docker image exists, building it if necessary."""
+    import subprocess
+
+    result = subprocess.run(
+        ["docker", "images", "-q", image_name],
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip():
+        return
+
+    print(f"[build] Building Docker image: {image_name}")
+    if not dockerfile_path.exists():
+        raise FileNotFoundError(f"Dockerfile not found: {dockerfile_path}")
+
+    result = subprocess.run(
+        ["docker", "build", "-t", image_name, "-f", str(dockerfile_path), "."],
+        cwd=dockerfile_path.parent,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to build Docker image: {image_name}")
+    print(f"[build] Docker image built successfully: {image_name}")
+
+
+def host_has_nvidia_gpu() -> bool:
+    """Return True if the host appears to have an NVIDIA GPU available."""
+    import subprocess
+
+    result = subprocess.run(
+        ["nvidia-smi", "-L"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def ensure_workspace_tarball() -> Path:
     """Ensure the workspace tarball exists, creating from Docker image if needed."""
     import subprocess
@@ -96,6 +139,23 @@ def ensure_workspace_tarball() -> Path:
     return WORKSPACE_TARBALL
 
 
+def ensure_image_tarball(image_name: str, tarball_path: Path, dockerfile_path: Path) -> Path:
+    """Ensure a Docker image tarball exists, building/exporting it if needed."""
+    import subprocess
+
+    tarball_path.parent.mkdir(parents=True, exist_ok=True)
+    if tarball_path.exists():
+        return tarball_path
+
+    ensure_docker_image(image_name, dockerfile_path)
+    print(f"[build] Exporting image tarball: {image_name}")
+    result = subprocess.run(["docker", "save", image_name, "-o", str(tarball_path)])
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to export Docker image: {image_name}")
+    print(f"[build] Image tarball created: {tarball_path}")
+    return tarball_path
+
+
 async def load_workspace(client: dagger.Client) -> dagger.Container:
     """Load the workspace container from tarball.
 
@@ -105,6 +165,53 @@ async def load_workspace(client: dagger.Client) -> dagger.Container:
     tarball_path = ensure_workspace_tarball()
     tarball = client.host().file(str(tarball_path))
     return client.container().import_(tarball)
+
+
+async def load_windows_workspace(client: dagger.Client, config: StageConfig) -> dagger.Container:
+    """Load the team6 window-segmentation workspace container."""
+    if not config.team6_root:
+        raise ValueError(
+            "Team6 stages require --team6-root pointing to the team6 checkout."
+        )
+
+    use_gpu = config.windows_device == "cuda" or (
+        config.windows_device == "auto" and host_has_nvidia_gpu()
+    )
+    if use_gpu:
+        tarball_path = ensure_image_tarball(
+            WINDOWS_GPU_IMAGE,
+            WINDOWS_GPU_TARBALL,
+            WINDOWS_GPU_DOCKERFILE,
+        )
+    else:
+        tarball_path = ensure_image_tarball(
+            WINDOWS_CPU_IMAGE,
+            WINDOWS_CPU_TARBALL,
+            WINDOWS_CPU_DOCKERFILE,
+        )
+
+    tarball = client.host().file(str(tarball_path))
+    team6_dir = client.host().directory(config.team6_root)
+    scripts_dir = client.host().directory(str(Path(__file__).parent / "stages" / "scripts"))
+
+    container = (
+        client.container()
+        .import_(tarball)
+        .with_mounted_directory("/opt/team6", team6_dir)
+        .with_mounted_directory("/opt/pipeline_scripts", scripts_dir)
+        .with_workdir("/workspace")
+    )
+
+    if use_gpu:
+        container = container.experimental_with_all_gp_us()
+
+    install_cmd = """#!/bin/bash
+set -euo pipefail
+python -m pip install -e /opt/team6/GroundingDINO
+python -m pip install -e /opt/team6/sam3
+python -m pip install -e /opt/team6/py360convert
+"""
+    return container.with_exec(["/bin/bash", "-lc", install_cmd])
 
 
 # =============================================================================
@@ -138,31 +245,27 @@ async def run_pipeline(
 
     async with dagger.connection(dagger_config):
         client = dagger.dag
-        # Load workspace container (from pre-built tarball)
-        print("\n[build] Loading workspace container...")
-        workspace = await load_workspace(client)
-        print("[build] Workspace ready")
+        container_cache: dict[str, dagger.Container] = {}
 
         # Process each input bag
-        for bag_path in input_bags:
-            print(f"\n[pipeline] Processing: {bag_path}")
+        for input_path_str in input_bags:
+            print(f"\n[pipeline] Processing: {input_path_str}")
 
-            # Get bag directory from host
-            bag_dir = Path(bag_path)
-            if not bag_dir.exists():
-                print(f"[error] Bag path does not exist: {bag_path}")
+            input_path = Path(input_path_str)
+            if not input_path.exists():
+                print(f"[error] Input path does not exist: {input_path_str}")
                 continue
 
-            # If bag_path is a file, use parent directory
-            if bag_dir.is_file():
-                bag_dir = bag_dir.parent
-
-            # Resolve to absolute path
-            bag_dir = bag_dir.resolve()
-            input_data = client.host().directory(str(bag_dir))
+            input_root = input_path.parent if input_path.is_file() else input_path
+            input_root = input_root.resolve()
+            input_path = input_path.resolve()
+            input_data = client.host().directory(str(input_root))
+            config.extra["current_input_path"] = str(input_path)
+            config.extra["current_input_name"] = input_path.name
 
             # Determine output subdirectory based on input path
-            bag_name = bag_dir.name
+            bag_dir = input_root
+            bag_name = input_path.stem if input_path.is_file() else bag_dir.name
             if bag_name == "rosbag":
                 # Use parent directories for naming: floor_X_date_run_Y
                 # Build safely so absolute roots never become part of the name.
@@ -181,7 +284,7 @@ async def run_pipeline(
 
             output_subdir = Path(output_dir) / bag_name
 
-            per_bag_stages = filter_stages_for_input(stage_names, bag_dir, output_dir)
+            per_bag_stages = filter_stages_for_input(stage_names, input_path, output_dir)
             print(f"[pipeline] Stages for this bag: {', '.join(per_bag_stages)}")
             if per_bag_stages != stage_names:
                 skipped = [name for name in stage_names if name not in per_bag_stages]
@@ -195,7 +298,7 @@ async def run_pipeline(
             # Run selected stages in sequence
             current_data = input_data
 
-            stages = []
+            stages: list[Stage] = []
             for name in per_bag_stages:
                 stage = registry.get(name)
                 if stage is None:
@@ -209,6 +312,20 @@ async def run_pipeline(
             for stage in stages:
                 print(f"\n[{stage.name}] Running stage: {stage.description}")
                 try:
+                    workspace = container_cache.get(stage.container_profile)
+                    if workspace is None:
+                        print(f"[build] Loading container profile: {stage.container_profile}")
+                        if stage.container_profile == "ros":
+                            workspace = await load_workspace(client)
+                        elif stage.container_profile == "windows":
+                            workspace = await load_windows_workspace(client, config)
+                        else:
+                            raise ValueError(
+                                f"Unsupported container profile: {stage.container_profile}"
+                            )
+                        container_cache[stage.container_profile] = workspace
+                        print(f"[build] Container profile ready: {stage.container_profile}")
+
                     if stage.name == "clean":
                         shutil.rmtree(output_subdir, ignore_errors=True)
                         current_data = input_data
@@ -275,7 +392,10 @@ async def run_pipeline(
                             )
                     except Exception as export_error:
                         print(f"[pipeline] Failed to export failed stage artifacts: {export_error}")
-                print(f"[pipeline] Skipping export because a stage failed for: {bag_path}")
+                print(
+                    "[pipeline] Skipping export because a stage failed for: "
+                    f"{input_path_str}"
+                )
                 continue
 
             output_subdir.mkdir(parents=True, exist_ok=True)
@@ -593,6 +713,36 @@ Adding Custom Stages:
         ),
     )
 
+    windows_group = parser.add_argument_group("Window segmentation options")
+    windows_group.add_argument(
+        "--team6-root",
+        default="/home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6",
+        help="Path to the local team6 checkout used by window_* stages.",
+    )
+    windows_group.add_argument(
+        "--windows-device",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Execution device for window_* stages (default: auto).",
+    )
+    windows_group.add_argument(
+        "--windows-prompt",
+        default="windows",
+        help='GroundingDINO prompt for window_dino (default: "windows").',
+    )
+    windows_group.add_argument(
+        "--windows-box-threshold",
+        type=float,
+        default=0.3,
+        help="GroundingDINO box threshold (default: 0.3).",
+    )
+    windows_group.add_argument(
+        "--windows-text-threshold",
+        type=float,
+        default=0.25,
+        help="GroundingDINO text threshold (default: 0.25).",
+    )
+
     # Verbosity
     parser.add_argument(
         "--verbose", "-v",
@@ -615,6 +765,8 @@ def expand_stage_dependencies(stage_names: List[str]) -> List[str]:
         "pca_align": ["slam"],
         "plot_path": ["slam"],
         "floorplan_overlay": ["slam"],
+        "window_sam": ["window_dino"],
+        "window_rectify": ["window_sam"],
     }
     ordered = []
     seen = set()
@@ -644,10 +796,14 @@ def expand_stage_dependencies(stage_names: List[str]) -> List[str]:
 
 def filter_stages_for_input(
     stage_names: List[str],
-    bag_dir: Path,
+    input_path: Path,
     output_dir: str,
 ) -> List[str]:
     """Filter stages based on input data markers."""
+    if input_path.is_file():
+        return stage_names
+
+    bag_dir = input_path
     try:
         bag_dir.relative_to(Path(output_dir).resolve())
         is_pipeline_output = True
@@ -721,11 +877,17 @@ def main():
     # Build stage configuration
     config = StageConfig(
         verbose=args.verbose,
+        input_root=str(Path(args.output).resolve()),
         use_torch=not args.no_torch,
         torch_device=args.device,
         jpeg_quality=args.jpeg_quality,
         slam_rate=args.slam_rate,
         slam_timeout=args.slam_timeout,
+        team6_root=str(Path(args.team6_root).resolve()),
+        windows_device=args.windows_device,
+        windows_prompt=args.windows_prompt,
+        windows_box_threshold=args.windows_box_threshold,
+        windows_text_threshold=args.windows_text_threshold,
         extra=extra_config,
     )
 

@@ -38,6 +38,7 @@ Dockerfile.workspace       # ROS2/OpenVINS workspace image
 - Docker (daemon running)
 - Network access for first workspace image build (clones challenge repos)
 - Recommended local environment: Conda env `3dvis`
+- For `window_*` GPU runs: NVIDIA GPU, `nvidia-smi`, and Docker GPU runtime support
 
 ## Setup
 
@@ -48,13 +49,15 @@ conda activate 3dvis
 # Runtime dependencies
 pip install -r requirements.txt
 
-# Dev tools (pytest, ruff)
+# Optional: dev tools (pytest, ruff)
 pip install -e ".[dev]"
 ```
 
 ### First-Run Note
 
 On first run, the pipeline builds `slam-workspace:latest` from `Dockerfile.workspace`, then exports it to `.cache/slam-workspace.tar`. This can take several minutes.
+
+The first `window_*` run also builds either `team6-windows-cpu:latest` or `team6-windows-gpu:latest` and exports it to `.cache/`.
 
 ## Quick Start
 
@@ -85,6 +88,19 @@ python pipeline.py --stages slam floorplan_overlay \
   --input data/floor_1/2025-05-05/run_1/rosbag \
   --output results/ \
   --slam-rate 0.5
+  --output results/
+
+# Full window pipeline on CPU
+python pipeline.py --stages window_rectify \
+  --input /path/to/input.png \
+  --output results/ \
+  --windows-device cpu
+
+# Full window pipeline on GPU
+python pipeline.py --stages window_rectify \
+  --input /path/to/input.png \
+  --output results/ \
+  --windows-device cuda
 ```
 
 ## CLI Reference
@@ -116,6 +132,14 @@ Visualization options:
 
 - `--floorplan`: optional host path to floorplan image for `floorplan_overlay`
 
+Window segmentation options:
+
+- `--team6-root`: path to the local `team6` checkout
+- `--windows-device {auto,cpu,cuda}`: device for `window_*` stages
+- `--windows-prompt`: GroundingDINO prompt
+- `--windows-box-threshold`: GroundingDINO box threshold
+- `--windows-text-threshold`: GroundingDINO text threshold
+
 ## Stages
 
 | Stage | Purpose | Typical Input | Typical Output |
@@ -127,6 +151,9 @@ Visualization options:
 | `plot_path` | Draw 2D trajectory image | `trajectory.txt` | `trajectory_path.png` |
 | `floorplan_overlay` | Draw trajectory over floorplan image | `trajectory.txt` (+ optional floorplan image) | `floorplan_overlay.png` |
 | `clean` | Remove output directory for the input run | output folder as input | cleaned host output |
+| `window_dino` | Detect window boxes with GroundingDINO | image file | `grounding_dino/bb.npy` + previews |
+| `window_sam` | Segment windows with SAM3 | image file or `window_dino` output | `windows_masks.npy`, `windows_segmented.png` |
+| `window_rectify` | Undistort the segmented mask | `window_sam` output | `undistorted/mask_undistorted.png` |
 
 ## Automatic Stage Dependencies
 
@@ -135,6 +162,8 @@ The pipeline auto-adds dependencies when needed:
 - `pca_align` automatically includes `slam`
 - `plot_path` automatically includes `slam`
 - `floorplan_overlay` automatically includes `slam`
+- `window_sam` automatically includes `window_dino`
+- `window_rectify` automatically includes `window_sam`
 
 If `pca_align` is explicitly included together with `plot_path` or `floorplan_overlay`, the aligned trajectory is used by downstream stages.
 
@@ -165,6 +194,8 @@ For `slam`, the bag must include:
 - `/cam1/image_raw/compressed`
 - `/imu/data_raw`
 
+For `window_*`, pass a single image file as `--input`.
+
 ## Output Structure and Artifacts
 
 For a rosbag input, results are exported under:
@@ -193,6 +224,15 @@ Visualization artifacts:
 
 - `trajectory_path.png` from `plot_path`
 - `floorplan_overlay.png` from `floorplan_overlay`
+
+Window segmentation artifacts:
+
+- `grounding_dino/raw_image.jpg`
+- `grounding_dino/pred.jpg`
+- `grounding_dino/bb.npy`
+- `windows_segmented.png`
+- `windows_masks.npy`
+- `undistorted/mask_undistorted.png`
 
 PCA alignment artifacts:
 
@@ -274,6 +314,36 @@ python pipeline.py --stages slam floorplan_overlay \
   --output results/ \
   --slam-rate 0.5 \
   --floorplan /path/to/floorplan.png
+```
+
+### Run only GroundingDINO on an image
+
+```bash
+python pipeline.py --stages window_dino \
+  --input /path/to/input.png \
+  --output results/ \
+  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
+  --windows-device cpu
+```
+
+### Run the full window pipeline on GPU
+
+```bash
+python pipeline.py --stages window_rectify \
+  --input /path/to/input.png \
+  --output results/ \
+  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
+  --windows-device cuda
+```
+
+### Force CPU fallback for the full window pipeline
+
+```bash
+python pipeline.py --stages window_rectify \
+  --input /path/to/input.png \
+  --output results/ \
+  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
+  --windows-device cpu
 ```
 
 ### Clean a run output

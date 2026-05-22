@@ -12,6 +12,7 @@ class StageConfig:
     """Configuration passed to stages."""
     # Common options
     verbose: bool = False
+    input_root: str = ""
 
     # Stitching options
     use_torch: bool = True
@@ -21,6 +22,13 @@ class StageConfig:
     # SLAM options
     slam_rate: float = 1.0
     slam_timeout: int = 0  # seconds (0 disables timeout)
+
+    # Window segmentation options
+    team6_root: str = ""
+    windows_device: str = "auto"
+    windows_prompt: str = "windows"
+    windows_box_threshold: float = 0.3
+    windows_text_threshold: float = 0.25
 
     # Custom options (for extensibility)
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -45,6 +53,11 @@ class Stage(ABC):
     def requires_ros_runtime(self) -> bool:
         """Whether this stage needs a running ROS2 system (ros2 launch, etc)."""
         return False
+
+    @property
+    def container_profile(self) -> str:
+        """Container profile required by this stage."""
+        return "ros"
 
     @property
     def input_type(self) -> str:
