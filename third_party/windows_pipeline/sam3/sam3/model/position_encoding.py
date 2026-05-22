@@ -38,6 +38,7 @@ class PositionEmbeddingSine(nn.Module):
         # Precompute positional encodings under `precompute_resolution` to fill the cache
         # and avoid symbolic shape tracing errors in torch.compile in PyTorch 2.4 nightly.
         if precompute_resolution is not None:
+            cache_device = "cuda" if torch.cuda.is_available() else "cpu"
             # We precompute pos enc for all strides used by both DualViTDetNeck and
             # TriViTDetNeck (scale_factors 4.0, 2.0, 1.0, 0.5 applied to backbone
             # output at stride 14 from 1008px input → 72x72).
@@ -52,7 +53,7 @@ class PositionEmbeddingSine(nn.Module):
                 (precompute_resolution // 32, precompute_resolution // 32),
             ]
             for size in precompute_sizes:
-                tensors = torch.zeros((1, 1) + size, device="cuda")
+                tensors = torch.zeros((1, 1) + size, device=cache_device)
                 self.forward(tensors)
                 # further clone and detach it in the cache (just to be safe)
                 self.cache[size] = self.cache[size].clone().detach()
