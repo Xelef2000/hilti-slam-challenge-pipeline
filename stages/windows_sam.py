@@ -40,6 +40,7 @@ class WindowsSamStage(Stage):
                 "image_path": f"/output/{image_name}",
                 "boxes_path": "/output/grounding_dino/bb.npy",
                 "device": config.windows_device,
+                "checkpoint_path": config.sam3_checkpoint,
             }
         )
 
@@ -48,7 +49,7 @@ set -euo pipefail
 mkdir -p /output
 cp -a /input/. /output/
 export WINDOWS_PIPELINE_ROOT=/opt/windows_pipeline
-export PYTHONPATH=/opt/windows_pipeline/py360convert:$PYTHONPATH
+export PYTHONPATH=/opt/windows_pipeline/py360convert:${{PYTHONPATH:-}}
 python /opt/pipeline_scripts/windows/run_sam3.py '{runtime_args}'
 """
 

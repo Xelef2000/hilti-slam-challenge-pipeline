@@ -28,6 +28,7 @@ class StageConfig:
     windows_prompt: str = "windows"
     windows_box_threshold: float = 0.3
     windows_text_threshold: float = 0.25
+    sam3_checkpoint: str = ""
 
     # Custom options (for extensibility)
     extra: Dict[str, Any] = field(default_factory=dict)

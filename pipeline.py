@@ -195,6 +195,17 @@ async def load_windows_workspace(client: dagger.Client, config: StageConfig) -> 
         .with_workdir("/workspace")
     )
 
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if hf_token:
+        container = container.with_env_variable("HF_TOKEN", hf_token)
+
+    if config.sam3_checkpoint:
+        checkpoint_path = Path(config.sam3_checkpoint).resolve()
+        container = container.with_mounted_file(
+            "/opt/windows_pipeline/checkpoints/sam3.pt",
+            client.host().file(str(checkpoint_path)),
+        )
+
     if use_gpu:
         container = container.experimental_with_all_gp_us()
     return container
@@ -723,6 +734,14 @@ Adding Custom Stages:
         default=0.25,
         help="GroundingDINO text threshold (default: 0.25).",
     )
+    windows_group.add_argument(
+        "--sam3-checkpoint",
+        default="",
+        help=(
+            "Optional local path to a SAM3 checkpoint. If omitted, the window_sam "
+            "stage requires HF_TOKEN to download the gated checkpoint."
+        ),
+    )
 
     # Verbosity
     parser.add_argument(
@@ -868,6 +887,9 @@ def main():
         windows_prompt=args.windows_prompt,
         windows_box_threshold=args.windows_box_threshold,
         windows_text_threshold=args.windows_text_threshold,
+        sam3_checkpoint=(
+            str(Path(args.sam3_checkpoint).resolve()) if args.sam3_checkpoint else ""
+        ),
         extra=extra_config,
     )
 

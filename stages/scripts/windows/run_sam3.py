@@ -76,6 +76,7 @@ def main() -> int:
     args = json.loads(sys.argv[1])
     image_path = Path(args["image_path"])
     boxes_path = Path(args["boxes_path"])
+    checkpoint_path = args.get("checkpoint_path", "")
     device = args["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -88,7 +89,20 @@ def main() -> int:
     print(f"[window_sam] Device: {device}")
     print(f"[window_sam] Filtered boxes: {len(filtered_boxes)}")
 
-    model = build_sam3_image_model(device=device)
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if checkpoint_path:
+        model = build_sam3_image_model(
+            device=device,
+            checkpoint_path=checkpoint_path,
+            load_from_HF=False,
+        )
+    elif hf_token:
+        model = build_sam3_image_model(device=device)
+    else:
+        raise RuntimeError(
+            "SAM3 requires either --sam3-checkpoint pointing to a local checkpoint "
+            "or HF_TOKEN in the environment for the gated Hugging Face model."
+        )
     processor = Sam3Processor(model, device=device)
     inference_state = processor.set_image(image)
     processor.reset_all_prompts(inference_state)
