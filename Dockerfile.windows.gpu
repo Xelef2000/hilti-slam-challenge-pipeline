@@ -1,0 +1,37 @@
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="6.0 6.1 7.0 7.5 8.0 8.6+PTX" \
+    SETUPTOOLS_USE_DISTUTILS=stdlib \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    python3-opencv \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install \
+    addict \
+    ftfy==6.1.1 \
+    huggingface_hub \
+    iopath>=0.1.10 \
+    matplotlib \
+    numpy>=1.26,<2 \
+    opencv-python \
+    pillow \
+    pycocotools \
+    regex \
+    scipy \
+    supervision \
+    timm>=1.0.17 \
+    tqdm \
+    yapf
+
+WORKDIR /workspace

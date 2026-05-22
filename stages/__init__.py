@@ -13,6 +13,9 @@ from .pca_align import PcaAlignStage
 from .plot_path import PlotPathStage
 from .slam import SlamStage
 from .stitch import StitchStage
+from .windows_dino import WindowsDinoStage
+from .windows_rectify import WindowsRectifyStage
+from .windows_sam import WindowsSamStage
 
 # Register all built-in stages
 registry = StageRegistry()
@@ -23,6 +26,9 @@ registry.register(PcaAlignStage())
 registry.register(PlotPathStage())
 registry.register(FloorplanOverlayStage())
 registry.register(CleanStage())
+registry.register(WindowsDinoStage())
+registry.register(WindowsSamStage())
+registry.register(WindowsRectifyStage())
 
 __all__ = [
     "Stage",
@@ -35,4 +41,7 @@ __all__ = [
     "PlotPathStage",
     "FloorplanOverlayStage",
     "CleanStage",
+    "WindowsDinoStage",
+    "WindowsSamStage",
+    "WindowsRectifyStage",
 ]
