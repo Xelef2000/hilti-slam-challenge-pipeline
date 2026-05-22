@@ -24,7 +24,6 @@ class StageConfig:
     slam_timeout: int = 0  # seconds (0 disables timeout)
 
     # Window segmentation options
-    team6_root: str = ""
     windows_device: str = "auto"
     windows_prompt: str = "windows"
     windows_box_threshold: float = 0.3

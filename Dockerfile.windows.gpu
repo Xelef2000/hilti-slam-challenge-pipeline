@@ -31,7 +31,14 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     scipy \
     supervision \
     timm>=1.0.17 \
+    transformers \
     tqdm \
+    typing_extensions \
     yapf
+
+COPY third_party/windows_pipeline /opt/windows_pipeline
+
+RUN python -m pip install -e /opt/windows_pipeline/GroundingDINO \
+    && python -m pip install -e /opt/windows_pipeline/sam3
 
 WORKDIR /workspace

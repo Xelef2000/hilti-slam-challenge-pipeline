@@ -46,11 +46,11 @@ from stages.base import Stage, StageConfig
 WORKSPACE_IMAGE = "slam-workspace:latest"
 WORKSPACE_TARBALL = Path(__file__).parent / ".cache" / "slam-workspace.tar"
 DOCKERFILE_PATH = Path(__file__).parent / "Dockerfile.workspace"
-WINDOWS_CPU_IMAGE = "team6-windows-cpu:latest"
-WINDOWS_CPU_TARBALL = Path(__file__).parent / ".cache" / "team6-windows-cpu.tar"
+WINDOWS_CPU_IMAGE = "windows-pipeline-cpu:latest"
+WINDOWS_CPU_TARBALL = Path(__file__).parent / ".cache" / "windows-pipeline-cpu.tar"
 WINDOWS_CPU_DOCKERFILE = Path(__file__).parent / "Dockerfile.windows.cpu"
-WINDOWS_GPU_IMAGE = "team6-windows-gpu:latest"
-WINDOWS_GPU_TARBALL = Path(__file__).parent / ".cache" / "team6-windows-gpu.tar"
+WINDOWS_GPU_IMAGE = "windows-pipeline-gpu:latest"
+WINDOWS_GPU_TARBALL = Path(__file__).parent / ".cache" / "windows-pipeline-gpu.tar"
 WINDOWS_GPU_DOCKERFILE = Path(__file__).parent / "Dockerfile.windows.gpu"
 
 
@@ -168,12 +168,7 @@ async def load_workspace(client: dagger.Client) -> dagger.Container:
 
 
 async def load_windows_workspace(client: dagger.Client, config: StageConfig) -> dagger.Container:
-    """Load the team6 window-segmentation workspace container."""
-    if not config.team6_root:
-        raise ValueError(
-            "Team6 stages require --team6-root pointing to the team6 checkout."
-        )
-
+    """Load the vendored window-segmentation workspace container."""
     use_gpu = config.windows_device == "cuda" or (
         config.windows_device == "auto" and host_has_nvidia_gpu()
     )
@@ -191,27 +186,18 @@ async def load_windows_workspace(client: dagger.Client, config: StageConfig) -> 
         )
 
     tarball = client.host().file(str(tarball_path))
-    team6_dir = client.host().directory(config.team6_root)
     scripts_dir = client.host().directory(str(Path(__file__).parent / "stages" / "scripts"))
 
     container = (
         client.container()
         .import_(tarball)
-        .with_mounted_directory("/opt/team6", team6_dir)
         .with_mounted_directory("/opt/pipeline_scripts", scripts_dir)
         .with_workdir("/workspace")
     )
 
     if use_gpu:
         container = container.experimental_with_all_gp_us()
-
-    install_cmd = """#!/bin/bash
-set -euo pipefail
-python -m pip install -e /opt/team6/GroundingDINO
-python -m pip install -e /opt/team6/sam3
-python -m pip install -e /opt/team6/py360convert
-"""
-    return container.with_exec(["/bin/bash", "-lc", install_cmd])
+    return container
 
 
 # =============================================================================
@@ -652,7 +638,7 @@ Adding Custom Stages:
         "--input", "-i",
         nargs="+",
         dest="input_bags",
-        help="Input rosbag path(s). Supports glob patterns in quotes."
+        help="Input rosbag or image path(s). Supports glob patterns in quotes."
     )
 
     parser.add_argument(
@@ -714,11 +700,6 @@ Adding Custom Stages:
     )
 
     windows_group = parser.add_argument_group("Window segmentation options")
-    windows_group.add_argument(
-        "--team6-root",
-        default="/home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6",
-        help="Path to the local team6 checkout used by window_* stages.",
-    )
     windows_group.add_argument(
         "--windows-device",
         default="auto",
@@ -883,7 +864,6 @@ def main():
         jpeg_quality=args.jpeg_quality,
         slam_rate=args.slam_rate,
         slam_timeout=args.slam_timeout,
-        team6_root=str(Path(args.team6_root).resolve()),
         windows_device=args.windows_device,
         windows_prompt=args.windows_prompt,
         windows_box_threshold=args.windows_box_threshold,

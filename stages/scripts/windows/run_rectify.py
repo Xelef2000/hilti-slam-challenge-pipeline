@@ -11,8 +11,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-TEAM6_ROOT = Path(os.environ["TEAM6_ROOT"])
-PY360_ROOT = TEAM6_ROOT / "py360convert"
+WINDOWS_PIPELINE_ROOT = Path(
+    os.environ.get("WINDOWS_PIPELINE_ROOT", "/opt/windows_pipeline")
+)
+PY360_ROOT = WINDOWS_PIPELINE_ROOT / "py360convert"
 sys.path.insert(0, str(PY360_ROOT))
 
 import py360convert  # noqa: E402

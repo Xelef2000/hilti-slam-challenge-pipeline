@@ -11,8 +11,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-TEAM6_ROOT = Path(os.environ["TEAM6_ROOT"])
-GROUNDING_DINO_ROOT = TEAM6_ROOT / "GroundingDINO"
+WINDOWS_PIPELINE_ROOT = Path(
+    os.environ.get("WINDOWS_PIPELINE_ROOT", "/opt/windows_pipeline")
+)
+GROUNDING_DINO_ROOT = WINDOWS_PIPELINE_ROOT / "GroundingDINO"
 sys.path.insert(0, str(GROUNDING_DINO_ROOT))
 
 import groundingdino.datasets.transforms as T  # noqa: E402
@@ -112,7 +114,7 @@ def main() -> int:
         raise RuntimeError("Requested CUDA for GroundingDINO but no GPU is available.")
 
     config_path = GROUNDING_DINO_ROOT / "groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    checkpoint_path = TEAM6_ROOT / "GroundingDINO/weights/groundingdino_swint_ogc.pth"
+    checkpoint_path = WINDOWS_PIPELINE_ROOT / "GroundingDINO/weights/groundingdino_swint_ogc.pth"
     image_pil, image = load_image(image_path)
     model = load_model(config_path, checkpoint_path, device)
     boxes, phrases = get_grounding_output(

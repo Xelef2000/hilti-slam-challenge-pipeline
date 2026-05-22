@@ -57,7 +57,7 @@ pip install -e ".[dev]"
 
 On first run, the pipeline builds `slam-workspace:latest` from `Dockerfile.workspace`, then exports it to `.cache/slam-workspace.tar`. This can take several minutes.
 
-The first `window_*` run also builds either `team6-windows-cpu:latest` or `team6-windows-gpu:latest` and exports it to `.cache/`.
+The first `window_*` run also builds either `windows-pipeline-cpu:latest` or `windows-pipeline-gpu:latest` and exports it to `.cache/`.
 
 ## Quick Start
 
@@ -134,7 +134,6 @@ Visualization options:
 
 Window segmentation options:
 
-- `--team6-root`: path to the local `team6` checkout
 - `--windows-device {auto,cpu,cuda}`: device for `window_*` stages
 - `--windows-prompt`: GroundingDINO prompt
 - `--windows-box-threshold`: GroundingDINO box threshold
@@ -322,7 +321,6 @@ python pipeline.py --stages slam floorplan_overlay \
 python pipeline.py --stages window_dino \
   --input /path/to/input.png \
   --output results/ \
-  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
   --windows-device cpu
 ```
 
@@ -332,7 +330,6 @@ python pipeline.py --stages window_dino \
 python pipeline.py --stages window_rectify \
   --input /path/to/input.png \
   --output results/ \
-  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
   --windows-device cuda
 ```
 
@@ -342,7 +339,6 @@ python pipeline.py --stages window_rectify \
 python pipeline.py --stages window_rectify \
   --input /path/to/input.png \
   --output results/ \
-  --team6-root /home/felix/Documents/Projects/3Dvis/windows/work/courses/3dv/team6 \
   --windows-device cpu
 ```
 

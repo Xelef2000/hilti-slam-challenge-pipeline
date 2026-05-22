@@ -17,8 +17,10 @@ from PIL import Image
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-TEAM6_ROOT = Path(os.environ["TEAM6_ROOT"])
-SAM3_ROOT = TEAM6_ROOT / "sam3"
+WINDOWS_PIPELINE_ROOT = Path(
+    os.environ.get("WINDOWS_PIPELINE_ROOT", "/opt/windows_pipeline")
+)
+SAM3_ROOT = WINDOWS_PIPELINE_ROOT / "sam3"
 sys.path.insert(0, str(SAM3_ROOT))
 
 from sam3.model.sam3_image_processor import Sam3Processor  # noqa: E402
