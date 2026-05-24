@@ -20,9 +20,6 @@ GROUNDING_DINO_CHECKPOINT_URL = (
     "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
     "v0.1.0-alpha/groundingdino_swint_ogc.pth"
 )
-GROUNDING_DINO_CHECKPOINT_PATH = (
-    GROUNDING_DINO_ROOT / "weights/groundingdino_swint_ogc.pth"
-)
 sys.path.insert(0, str(GROUNDING_DINO_ROOT))
 
 import groundingdino.datasets.transforms as T  # noqa: E402
@@ -64,10 +61,14 @@ def load_model(config_path: Path, checkpoint_path: Path, device: str):
     return model.eval().to(device)
 
 
-def ensure_checkpoint(checkpoint_path: Path) -> Path:
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+def ensure_checkpoint(checkpoint_path: Path, cache_dir: Path | None = None) -> Path:
     if checkpoint_path.is_file():
         return checkpoint_path
+
+    if cache_dir is None:
+        cache_dir = Path("/tmp/groundingdino-cache")
+    checkpoint_path = cache_dir / checkpoint_path.name
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_path = checkpoint_path.with_suffix(".pth.tmp")
     print(
@@ -144,7 +145,9 @@ def main() -> int:
         raise RuntimeError("Requested CUDA for GroundingDINO but no GPU is available.")
 
     config_path = GROUNDING_DINO_ROOT / "groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    checkpoint_path = ensure_checkpoint(GROUNDING_DINO_CHECKPOINT_PATH)
+    vendored_checkpoint = GROUNDING_DINO_ROOT / "weights/groundingdino_swint_ogc.pth"
+    checkpoint_cache_dir = output_dir / ".model_cache"
+    checkpoint_path = ensure_checkpoint(vendored_checkpoint, checkpoint_cache_dir)
     image_pil, image = load_image(image_path)
     model = load_model(config_path, checkpoint_path, device)
     boxes, phrases = get_grounding_output(
