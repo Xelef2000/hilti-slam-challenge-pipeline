@@ -17,6 +17,8 @@ from .windows_dino import WindowsDinoStage
 from .windows_rectify import WindowsRectifyStage
 from .windows_sam import WindowsSamStage
 from .windows import WindowsStage
+from .windows_extract import WindowsExtractStage
+from .windows_rosbag import WindowsRosbagStage
 
 # Register all built-in stages
 registry = StageRegistry()
@@ -31,6 +33,8 @@ registry.register(WindowsDinoStage())
 registry.register(WindowsSamStage())
 registry.register(WindowsRectifyStage())
 registry.register(WindowsStage())
+registry.register(WindowsExtractStage())
+registry.register(WindowsRosbagStage())
 
 __all__ = [
     "Stage",
@@ -47,4 +51,6 @@ __all__ = [
     "WindowsSamStage",
     "WindowsRectifyStage",
     "WindowsStage",
+    "WindowsExtractStage",
+    "WindowsRosbagStage",
 ]

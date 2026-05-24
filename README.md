@@ -134,6 +134,13 @@ python pipeline.py --stages windows \
   --input /path/to/input.png \
   --output results/ \
   --windows-device cpu
+
+# Public ROS2 bag window pipeline
+python pipeline.py --stages windows_rosbag \
+  --input data/floor_1/2025-05-05/run_1/rosbag \
+  --output results/ \
+  --container-runtime apptainer \
+  --windows-device cuda
 ```
 
 ## CLI Reference
@@ -174,6 +181,8 @@ Window segmentation options:
 - `--windows-box-threshold`: GroundingDINO box threshold
 - `--windows-text-threshold`: GroundingDINO text threshold
 - `--sam3-checkpoint`: optional local SAM3 checkpoint path for the transitional file-based pipeline
+- `--windows-topic`: preferred image topic for `windows_rosbag` extraction
+- `--windows-frame-index`: frame index for `windows_rosbag` extraction (`-1` means middle frame)
 
 ## Stages
 
@@ -187,6 +196,8 @@ Window segmentation options:
 | `floorplan_overlay` | Draw trajectory over floorplan image | `trajectory.txt` (+ optional floorplan image) | `floorplan_overlay.png` |
 | `clean` | Remove output directory for the input run | output folder as input | cleaned host output |
 | `windows` | Public normalized window-perception bundle | image file | `windows/metadata.json` + canonical artifacts |
+| `windows_rosbag` | Public normalized window-perception bundle from a ROS2 bag | ROS2 bag | `windows/metadata.json` + canonical artifacts |
+| `windows_extract` | Internal bag-to-image adapter for window inference | ROS2 bag | extracted `input.png` + source metadata |
 | `window_dino` | Transitional file-based window box detection | image file | `grounding_dino/bb.npy` + previews |
 | `window_sam` | Transitional file-based SAM3 segmentation | image file or `window_dino` output | `windows_masks.npy`, `windows_segmented.png` |
 | `window_rectify` | Transitional file-based mask rectification | `window_sam` output | `undistorted/mask_undistorted.png` |
@@ -204,6 +215,7 @@ The pipeline auto-adds dependencies when needed:
 - `plot_path` automatically includes `slam`
 - `floorplan_overlay` automatically includes `slam`
 - `windows` automatically includes `window_rectify`
+- `windows_rosbag` automatically includes `windows_extract` and `window_rectify`
 - `window_sam` automatically includes `window_dino`
 - `window_rectify` automatically includes `window_sam`
 
@@ -407,6 +419,25 @@ results/<image_stem>/windows/
   segmented_overlay.png
   rectified_mask.png
 ```
+
+### Run the public window pipeline on a ROS2 bag
+
+```bash
+python pipeline.py --stages windows_rosbag \
+  --input data/floor_1/2025-05-05/run_1/rosbag \
+  --output results/ \
+  --container-runtime apptainer \
+  --windows-device cuda \
+  --windows-topic /cam0/image_raw/compressed \
+  --windows-frame-index -1
+```
+
+The current `windows_rosbag` implementation is a bag adapter:
+- it extracts one representative frame from the chosen image topic
+- it runs the validated image-based window stack on that frame
+- it emits the same normalized `windows/` output bundle
+
+This is the first integration step before a future ROS-native subscriber stage.
 
 ### Planned ROS-native window flow
 
