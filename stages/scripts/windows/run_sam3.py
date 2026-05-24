@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 
 import matplotlib
@@ -109,13 +108,7 @@ def main() -> int:
     for box in filtered_boxes:
         processor.add_geometric_prompt(box=box.tolist(), label=True, state=inference_state)
 
-    autocast_context = (
-        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        if device == "cuda"
-        else nullcontext()
-    )
-    with autocast_context:
-        output = processor._forward_grounding(state=inference_state)
+    output = processor._forward_grounding(state=inference_state)
 
     output_path = image_path.parent / "windows_segmented.png"
     masks_path = image_path.parent / "windows_masks.npy"
