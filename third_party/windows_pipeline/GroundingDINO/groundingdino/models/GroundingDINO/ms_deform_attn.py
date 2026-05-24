@@ -27,7 +27,10 @@ from torch.nn.init import constant_, xavier_uniform_
 
 try:
     from groundingdino import _C
-except:
+    HAS_CUSTOM_OPS = True
+except Exception:
+    _C = None
+    HAS_CUSTOM_OPS = False
     warnings.warn("Failed to load custom C++ ops. Running on CPU mode Only!")
 
 
@@ -326,8 +329,8 @@ class MultiScaleDeformableAttention(nn.Module):
                     reference_points.shape[-1]
                 )
             )
-    
-        if torch.cuda.is_available() and value.is_cuda:
+
+        if HAS_CUSTOM_OPS and torch.cuda.is_available() and value.is_cuda:
             halffloat = False
             if value.dtype == torch.float16:
                 halffloat = True
@@ -347,6 +350,11 @@ class MultiScaleDeformableAttention(nn.Module):
             if halffloat:
                 output = output.half()
         else:
+            if value.is_cuda:
+                warnings.warn(
+                    "GroundingDINO custom CUDA ops are unavailable; "
+                    "falling back to the slower PyTorch deformable attention path."
+                )
             output = multi_scale_deformable_attn_pytorch(
                 value, spatial_shapes, sampling_locations, attention_weights
             )
