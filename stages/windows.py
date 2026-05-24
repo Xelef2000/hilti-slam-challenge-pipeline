@@ -36,8 +36,6 @@ class WindowsStage(Stage):
         input_dir: Path,
         config: StageConfig,
     ) -> Path:
-        import numpy as np
-
         windows_dir = input_dir / "windows"
         windows_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,6 +86,8 @@ class WindowsStage(Stage):
         masks_path = input_dir / copied_artifacts["masks_npy"]
 
         try:
+            import numpy as np
+
             boxes = np.load(boxes_path)
             stats["num_boxes"] = int(len(boxes))
             stats["boxes_shape"] = list(boxes.shape)
@@ -95,6 +95,8 @@ class WindowsStage(Stage):
             pass
 
         try:
+            import numpy as np
+
             masks = np.load(masks_path)
             stats["masks_shape"] = list(masks.shape)
             stats["mask_dtype"] = str(masks.dtype)
