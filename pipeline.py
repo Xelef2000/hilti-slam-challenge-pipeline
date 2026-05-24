@@ -13,7 +13,8 @@ Available stages:
   - plot_path: Render SLAM trajectory to an image
   - floorplan_overlay: Overlay trajectory on a floorplan image
   - clean    : Remove pipeline outputs (leaves input data intact)
-  - windows  : Run the full window-perception stack and normalize outputs
+  - windows  : Run the full window-perception stack on an image and normalize outputs
+  - windows_rosbag: Run the full window-perception stack on an extracted bag frame
 
 Usage:
     python pipeline.py --stages stitch slam --input data/floor_1/2025-05-05/run_1/rosbag
@@ -497,6 +498,23 @@ Adding Custom Stages:
             "stage requires HF_TOKEN to download the gated checkpoint."
         ),
     )
+    windows_group.add_argument(
+        "--windows-topic",
+        default="/cam0/image_raw/compressed",
+        help=(
+            "Preferred image topic for windows_rosbag extraction "
+            "(default: /cam0/image_raw/compressed)."
+        ),
+    )
+    windows_group.add_argument(
+        "--windows-frame-index",
+        type=int,
+        default=-1,
+        help=(
+            "Frame index for windows_rosbag extraction. Use -1 for the middle frame "
+            "(default: -1)."
+        ),
+    )
 
     # Verbosity
     parser.add_argument(
@@ -523,6 +541,8 @@ def expand_stage_dependencies(stage_names: List[str]) -> List[str]:
         "window_sam": ["window_dino"],
         "window_rectify": ["window_sam"],
         "windows": ["window_rectify"],
+        "windows_extract": [],
+        "windows_rosbag": ["windows_extract", "window_rectify"],
     }
     ordered = []
     seen = set()
@@ -646,6 +666,8 @@ def main():
         sam3_checkpoint=(
             str(Path(args.sam3_checkpoint).resolve()) if args.sam3_checkpoint else ""
         ),
+        windows_topic=args.windows_topic,
+        windows_frame_index=args.windows_frame_index,
         extra=extra_config,
     )
 

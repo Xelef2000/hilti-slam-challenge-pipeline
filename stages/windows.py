@@ -64,6 +64,10 @@ class WindowsStage(Stage):
                 input_dir / "undistorted" / "mask_undistorted.png",
                 windows_dir / "rectified_mask.png",
             ),
+            "source_metadata": (
+                input_dir / "windows_source.json",
+                windows_dir / "source_metadata.json",
+            ),
         }
 
         copied_artifacts: dict[str, str] = {}
@@ -116,6 +120,16 @@ class WindowsStage(Stage):
             "artifacts": copied_artifacts,
             "stats": stats,
         }
+
+        source_metadata_key = "source_metadata"
+        if source_metadata_key in copied_artifacts:
+            source_metadata_path = input_dir / copied_artifacts[source_metadata_key]
+            try:
+                metadata["source"] = json.loads(
+                    source_metadata_path.read_text(encoding="utf-8")
+                )
+            except Exception:
+                pass
 
         metadata_path = windows_dir / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

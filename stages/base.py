@@ -28,6 +28,8 @@ class StageConfig:
     windows_box_threshold: float = 0.3
     windows_text_threshold: float = 0.25
     sam3_checkpoint: str = ""
+    windows_topic: str = "/cam0/image_raw/compressed"
+    windows_frame_index: int = -1
 
     # Custom options (for extensibility)
     extra: Dict[str, Any] = field(default_factory=dict)
