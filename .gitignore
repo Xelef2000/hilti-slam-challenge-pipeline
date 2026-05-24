@@ -25,6 +25,7 @@ ENV/
 
 # Tooling and local workspace caches
 .cache/
+.apptainer-cache/
 .claude/
 
 # IDE/editor files

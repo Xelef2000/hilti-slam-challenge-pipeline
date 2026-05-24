@@ -15,9 +15,7 @@ From: python:3.10-slim
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         git \
-        libgl1 \
         libglib2.0-0 \
-        python3-opencv \
         && rm -rf /var/lib/apt/lists/*
 
     python -m pip install --upgrade pip 'setuptools<81' wheel
@@ -32,7 +30,7 @@ From: python:3.10-slim
         'iopath>=0.1.10' \
         matplotlib \
         'numpy>=1.26,<2' \
-        opencv-python \
+        opencv-python-headless \
         pillow \
         pycocotools \
         psutil \
@@ -60,7 +58,8 @@ if not checkpoint.exists():
     )
 PY
 
-    python -m pip install --no-build-isolation /opt/windows_pipeline/GroundingDINO
-    python -m pip install --no-build-isolation /opt/windows_pipeline/sam3
+    python -m pip install --no-build-isolation --no-deps /opt/windows_pipeline/GroundingDINO
+    python -m pip install --no-build-isolation --no-deps /opt/windows_pipeline/sam3
+    python -m pip uninstall -y opencv-python opencv-contrib-python opencv-contrib-python-headless
+    python -m pip install --force-reinstall --no-deps opencv-python-headless==4.11.0.86
     mkdir -p /workspace
-

@@ -159,6 +159,11 @@ class ContainerBackend:
             BindMount(bundle_dir, "/stage_runtime", read_only=True),
             BindMount(self.scripts_dir, "/opt/pipeline_scripts", read_only=True),
         ]
+        windows_pipeline_dir = ROOT / "third_party" / "windows_pipeline"
+        if windows_pipeline_dir.exists():
+            mounts.append(
+                BindMount(windows_pipeline_dir.resolve(), "/opt/windows_pipeline", read_only=True)
+            )
         mounts.extend(spec.extra_mounts)
 
         env = dict(spec.env)
