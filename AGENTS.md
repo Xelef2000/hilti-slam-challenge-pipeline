@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `pipeline.py` is the CLI entrypoint and Python container-runtime orchestrator.
-- `stages/` contains modular pipeline stages (`stitch.py`, `convert.py`, `slam.py`) plus `base.py` and registry wiring in `__init__.py`.
+- `stages/` contains the `slam` stage (`slam.py`, `slam_runner.py`) plus `base.py` and registry wiring in `__init__.py`.
 - `data/` holds example ROS2 bag inputs (mounted into containers; not copied).
 - `results/` is the default output area for exported artifacts.
 
@@ -10,8 +10,7 @@
 - `pip install -r requirements.txt` installs runtime dependencies.
 - `pip install -e ".[dev]"` installs dev tools (pytest, ruff).
 - `python pipeline.py --list-stages` lists available stages.
-- `python pipeline.py --stages stitch --input data/floor_1/2025-05-05/run_1/rosbag` runs a single stage.
-- `python pipeline.py --stages stitch slam --input <bag> --output results/` runs a multi-stage pipeline.
+- `python pipeline.py --stages slam --input data/floor_1 --output ./out` runs SLAM. `--input` is a run folder containing a `rosbag/` subdir; output lands in `./out/slam/floor_1/`.
 
 ## Coding Style & Naming Conventions
 - Python 3.10+ with 4-space indentation.
