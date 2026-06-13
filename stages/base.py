@@ -46,6 +46,9 @@ class StageConfig:
     window_box_threshold: float = 0.3
     window_text_threshold: float = 0.25
     window_camera_height: float = 2.0
+    window_max_observation_width: float = 10.0
+    window_max_observation_distance: float = 50.0
+    window_max_edge_distance: float = 8.0
     floorplan_realign_weight: float = 1.0
     window_realign_weight: float = 1.0
 

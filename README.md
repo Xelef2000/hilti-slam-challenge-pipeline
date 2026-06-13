@@ -284,6 +284,9 @@ Parallel Window image-flow options:
 - `--window-device {auto,cpu,cuda}`: device for Window DINO/SAM stages
 - `--window-box-threshold`, `--window-text-threshold`: GroundingDINO thresholds
 - `--window-camera-height`: camera height in meters for `window_pose`
+- `--window-max-observation-width`: reject Window observations wider than this many meters (default: `10.0`)
+- `--window-max-observation-distance`: reject Window local points farther than this many meters (default: `50.0`)
+- `--window-max-edge-distance`: reject Window observations too far from matched floorplan walls (default: `8.0`)
 
 Combined realignment options:
 
@@ -313,7 +316,7 @@ SLAM options:
 | `window_sam` | Run Window SAM3 on DINO boxes | `window_dino` output | per-frame `sam3/*/windows_masks.npy` |
 | `window_rectify` | Rectify Window SAM3 masks | `window_sam` output | per-frame `rectified/*/mask_undistorted.png` |
 | `window_pose` | Compute Window mask-derived window pose metrics | `window_sam` output | `window_pose_summary.csv` |
-| `window_align` | Realign trajectory from selected-frame window detections | `window_pose`, `align`, `floorplan_edges` outputs | `trajectory_window_aligned.csv` |
+| `window_align` | Realign trajectory from selected-frame window detections | `window_pose`, start-aligned `align`, `floorplan_edges` outputs | `trajectory_window_aligned.csv` |
 | `window_overlay` | Render the Window-aligned trajectory and window constraints | floorplan PNG + `window_align` output | `window_overlay.png` |
 | `combined_align` | Fuse floorplan and Window realignments by weight | `floorplan_align`, `window_align`, `align` outputs | `trajectory_combined_aligned.csv` |
 | `combined_overlay` | Render base, floorplan, Window, and combined trajectories | all aligned trajectories | `combined_overlay.png` |
@@ -467,8 +470,9 @@ Builds a trajectory realignment from selected-frame window detections.
 
 - Input: `window_pose` summaries, `image_selector/selected_frames.json`, `align/trajectory_aligned.csv`, `floorplan_edges/floorplan_edges.csv`.
 - Host dependency: `numpy`.
-- Output: `trajectory_window_aligned.csv`, `window_alignment_transform.json`, `window_alignment_observations.csv`.
-- Notes: converts window-relative observations into the map frame, snaps them to nearest floorplan wall segments, then solves a 2D yaw plus translation correction.
+- Output: `trajectory_window_aligned.csv`, `window_alignment_transform.json`, `window_alignment_observations.csv`, `window_alignment_skipped.csv`.
+- Key options: `--window-max-observation-width`, `--window-max-observation-distance`, `--window-max-edge-distance`.
+- Notes: uses the same `align` output as the ray pipeline. With `--align-start-position`, window-relative observations are projected into the initial-position map frame before snapping them to nearest floorplan wall segments and solving a 2D yaw plus translation correction. Implausible Window pose estimates are skipped before fitting so a bad SAM/DINO frame cannot dominate the trajectory. Without start alignment, matching is done in OpenVINS-world cam0 coordinates and will not overlay the floorplan unless that frame already matches the map.
 
 ### `window_overlay`
 
@@ -684,14 +688,17 @@ python pipeline.py --stages final_eval \
 export HF_TOKEN=...  # required by window_sam unless SAM3 is cached locally
 
 python pipeline.py \
-  --stages image_selector window_dino window_sam window_rectify window_pose window_align window_overlay \
+  --stages slam align floorplan_edges image_selector window_dino window_sam window_rectify window_pose window_align window_overlay \
+  --align-start-position \
   --input data/floor_1 \
   --output ./out \
   --image-frames 100,250,400 \
+  --slam-rate 0.5 \
   --window-device cpu
 ```
 
-The Window stages can still be run independently, but they are now also included in `all`.
+`window_align` depends on `align/trajectory_aligned.csv` for the cam0 trajectory and `floorplan_edges/floorplan_edges.csv` for the map constraints. The command above includes those prerequisites so the Window flow uses the same initial-position map frame as the ray/floorplan flow.
+The Window stages can still be run independently after those prerequisite outputs already exist, and they are also included in `all`.
 The public stage and option names use `window_*`; by default `--window-root` points at the vendored source under `third_party/window`.
 
 ## Development
