@@ -34,6 +34,9 @@ class StageConfig:
     # Alignment options
     align_start_position: bool = False
 
+    # Evaluation options
+    eval_max_time_delta: float = 0.05
+
     # Custom options (for extensibility)
     extra: Dict[str, Any] = field(default_factory=dict)
 

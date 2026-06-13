@@ -152,6 +152,7 @@ Key arguments:
 - `--list-stages/-l`: print stages and exit
 - `--align-start-position`: use `initial-pos.txt` in the `align` stage to place the CSV trajectory in the map frame
 - `--include-pca-align`: when using `all`, insert `pca_align` immediately after `align`
+- `--eval-max-dt`: maximum timestamp difference for `final_eval` matches in seconds (default: `0.05`)
 - `--verbose/-v`: extra console output
 
 SLAM options:
@@ -169,9 +170,10 @@ SLAM options:
 | `pca_align` | Reorient the aligned CSV trajectory using PCA axes | `align` output | `trajectory_pca_aligned.csv` + PCA diagnostics |
 | `line_extractor` | Extract near-horizontal cam0 line detections | Run folder ROS2 bag | `lines.csv` |
 | `floorplan_edges` | Extract wall segments from the run DXF | Run folder DXF | `floorplan_edges.csv` |
-| `rays` | Back-project line detections using aligned poses | `line_extractor` + `pca_align` or `align` outputs | `rays.csv` |
-| `floorplan_align` | Refine trajectory against floorplan edges | `rays`, `floorplan_edges`, `pca_align` or `align` outputs | `trajectory_floor_aligned.csv` |
+| `rays` | Back-project line detections using aligned poses | `line_extractor` + `align` outputs | `rays.csv` |
+| `floorplan_align` | Refine trajectory against floorplan edges | `rays`, `floorplan_edges`, `align` outputs | `trajectory_floor_aligned.csv` |
 | `floorplan_overlay` | Render final trajectory on the floorplan PNG | floorplan PNG + final trajectory | `overlay.png` |
+| `final_eval` | Evaluate final trajectory against `groundtruth.txt` | final trajectory + run folder ground truth | `summary.json` + `matched_errors.csv` |
 
 ## Smart Skip
 
@@ -223,6 +225,11 @@ Failure artifacts:
 
 - Failed stage outputs are exported to `_failed/<stage_name>/`
 - For SLAM failures, `slam_diagnosis.txt` is created when a known init pattern is detected
+
+Evaluation artifacts:
+
+- `summary.json`: matched-pose counts and XY/XYZ/Z/time error statistics
+- `matched_errors.csv`: per-estimate nearest-ground-truth match and error columns
 
 ## Apptainer Build Workarounds
 
@@ -310,6 +317,14 @@ python pipeline.py --stages all --align-start-position --include-pca-align \
   --input data/floor_1 \
   --output ./out \
   --slam-rate 0.5
+```
+
+### Evaluate existing outputs
+
+```bash
+python pipeline.py --stages final_eval \
+  --input data/floor_1 \
+  --output ./out
 ```
 
 ## Development

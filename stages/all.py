@@ -13,6 +13,7 @@ FULL_PIPELINE_STAGES = [
     "rays",
     "floorplan_align",
     "floorplan_overlay",
+    "final_eval",
 ]
 
 

@@ -8,8 +8,7 @@ Visualization (matplotlib sliders, 3D triad plots) is dropped.
 Inputs:
   * rays.csv from `rays` stage (origin + two ray endpoints per detected line)
   * floorplan_edges.csv from `floorplan_edges` stage (2D wall segments in meters)
-  * trajectory_pca_aligned.csv from `pca_align` when present, otherwise
-    trajectory_aligned.csv from `align` (start-pose-anchored trajectory)
+  * trajectory_aligned.csv from `align` (start-pose-anchored trajectory)
 
 Output:
   * trajectory_floor_aligned.csv: the input trajectory with the residual SE(3)
@@ -27,7 +26,6 @@ from ._geometry import quat_to_rot, rot_to_quat
 from .base import Stage, StageConfig, stage_output_path
 
 OUTPUT_CSV = "trajectory_floor_aligned.csv"
-PCA_ALIGNED_TRAJ_CSV = "trajectory_pca_aligned.csv"
 ALIGNED_TRAJ_CSV = "trajectory_aligned.csv"
 
 # Search ranges. Theta range matches the reference (-20..+20 deg). For
@@ -163,12 +161,6 @@ def _resolve(input_dir, config, stage_name, filename):
 
 
 def _resolve_trajectory(config):
-    try:
-        path = stage_output_path(config, "pca_align") / PCA_ALIGNED_TRAJ_CSV
-        if path.is_file():
-            return path
-    except Exception:
-        pass
     return _resolve(None, config, "align", ALIGNED_TRAJ_CSV)
 
 

@@ -67,18 +67,11 @@ class FloorplanOverlayStage(Stage):
         before_traj_path = None
         if traj_kind == "floor_aligned":
             try:
-                candidate = stage_output_path(config, "pca_align") / "trajectory_pca_aligned.csv"
+                candidate = stage_output_path(config, "align") / "trajectory_aligned.csv"
                 if candidate.is_file():
                     before_traj_path = candidate
             except Exception:
                 pass
-            if before_traj_path is None:
-                try:
-                    candidate = stage_output_path(config, "align") / "trajectory_aligned.csv"
-                    if candidate.is_file():
-                        before_traj_path = candidate
-                except Exception:
-                    pass
         elif traj_kind == "pca_aligned":
             try:
                 candidate = stage_output_path(config, "align") / "trajectory_aligned.csv"

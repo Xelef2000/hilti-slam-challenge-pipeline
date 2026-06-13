@@ -348,6 +348,13 @@ Adding Custom Stages:
         help="Use initial-pos.txt to align the converted cam0 CSV trajectory to the map frame",
     )
 
+    parser.add_argument(
+        "--eval-max-dt",
+        type=float,
+        default=0.05,
+        help="Maximum timestamp difference for final_eval matches in seconds (default: 0.05)",
+    )
+
     slam_group = parser.add_argument_group("SLAM options")
     slam_group.add_argument(
         "--slam-rate",
@@ -410,6 +417,7 @@ def main():
         slam_rate=args.slam_rate,
         slam_timeout=args.slam_timeout,
         align_start_position=args.align_start_position,
+        eval_max_time_delta=args.eval_max_dt,
     )
 
     return run_pipeline(

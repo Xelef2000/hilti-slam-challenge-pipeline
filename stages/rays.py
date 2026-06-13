@@ -20,7 +20,6 @@ from .base import Stage, StageConfig, stage_output_path
 
 OUTPUT_CSV = "rays.csv"
 LINES_FILENAME = "lines.csv"
-PCA_ALIGNED_TRAJ_FILENAME = "trajectory_pca_aligned.csv"
 ALIGNED_TRAJ_FILENAME = "trajectory_aligned.csv"
 SLAM_TRAJ_FILENAME = "trajectory.txt"
 
@@ -66,7 +65,7 @@ class RaysStage(Stage):
         lines = _load_lines(lines_csv)
         pose_t, pose_xyz, pose_q = _load_trajectory(traj_csv)
 
-        if traj_kind not in {"aligned", "pca_aligned"}:
+        if traj_kind != "aligned":
             print(
                 f"[{self.name}] WARNING: using {traj_kind} trajectory; "
                 "rays expect cam0 poses in world from `align`, not raw IMU poses"
@@ -160,13 +159,7 @@ def _find_lines_csv(input_dir: Path, config: StageConfig) -> Path:
 
 
 def _find_trajectory(config: StageConfig) -> Tuple[Path, str]:
-    """Prefer PCA/align CSV trajectories; fall back to slam's raw trajectory.txt."""
-    try:
-        pca_aligned = stage_output_path(config, "pca_align") / PCA_ALIGNED_TRAJ_FILENAME
-        if pca_aligned.is_file():
-            return pca_aligned, "pca_aligned"
-    except Exception:
-        pass
+    """Prefer align's map-frame CSV; fall back to slam's raw trajectory.txt."""
     try:
         aligned = stage_output_path(config, "align") / ALIGNED_TRAJ_FILENAME
         if aligned.is_file():
@@ -180,8 +173,7 @@ def _find_trajectory(config: StageConfig) -> Tuple[Path, str]:
     except Exception:
         pass
     raise FileNotFoundError(
-        "No trajectory found. Expected pca_align/trajectory_pca_aligned.csv, "
-        "align/trajectory_aligned.csv, or slam/trajectory.txt"
+        "No trajectory found. Expected align/trajectory_aligned.csv or slam/trajectory.txt"
     )
 
 

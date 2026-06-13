@@ -8,6 +8,7 @@ and returns an output directory. Stages can be chained together.
 from .align import AlignStage
 from .all import AllStage
 from .base import Stage, StageRegistry
+from .final_eval import FinalEvalStage
 from .floorplan_align import FloorplanAlignStage
 from .floorplan_edges import FloorplanEdgesStage
 from .floorplan_overlay import FloorplanOverlayStage
@@ -26,6 +27,7 @@ registry.register(FloorplanEdgesStage())
 registry.register(RaysStage())
 registry.register(FloorplanAlignStage())
 registry.register(FloorplanOverlayStage())
+registry.register(FinalEvalStage())
 
 __all__ = [
     "Stage",
@@ -40,4 +42,5 @@ __all__ = [
     "RaysStage",
     "FloorplanAlignStage",
     "FloorplanOverlayStage",
+    "FinalEvalStage",
 ]
