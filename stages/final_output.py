@@ -46,6 +46,11 @@ class FinalOutputStage(Stage):
                 "window_align",
                 "window_alignment_observations.csv",
             ),
+            (
+                "alignment/window_alignment_skipped.csv",
+                "window_align",
+                "window_alignment_skipped.csv",
+            ),
             ("alignment/combined_alignment.json", "combined_align", "combined_alignment.json"),
             ("evaluation/summary.json", "final_eval", "summary.json"),
             ("evaluation/matched_errors.csv", "final_eval", "matched_errors.csv"),
