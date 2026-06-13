@@ -20,7 +20,9 @@ from .trajectory_utils import (
 
 OUTPUT_CSV = "trajectory_window_aligned.csv"
 OBSERVATIONS_CSV = "window_alignment_observations.csv"
+SKIPPED_CSV = "window_alignment_skipped.csv"
 TRANSFORM_JSON = "window_alignment_transform.json"
+BASE_TRAJECTORY_CSV = "trajectory_aligned.csv"
 
 
 class WindowAlignStage(Stage):
@@ -51,7 +53,7 @@ class WindowAlignStage(Stage):
         return "trajectory_csv"
 
     def run(self, runner, input_dir: Path, config: StageConfig) -> Path:
-        base_traj_path = stage_output_path(config, "align") / "trajectory_aligned.csv"
+        base_traj_path = _resolve_base_trajectory(config)
         edges_path = stage_output_path(config, "floorplan_edges") / "floorplan_edges.csv"
         metadata_path = stage_output_path(config, "image_selector") / "selected_frames.json"
         window_pose_dir = stage_output_path(config, "window_pose")
@@ -60,7 +62,7 @@ class WindowAlignStage(Stage):
         edges = _load_edges(edges_path)
         frame_timestamps = _load_frame_timestamps(metadata_path)
 
-        observations = _build_observations(
+        observations, skipped = _build_observations(
             window_pose_dir=window_pose_dir,
             frame_timestamps=frame_timestamps,
             traj_t=timestamps,
@@ -68,6 +70,9 @@ class WindowAlignStage(Stage):
             traj_quats=quats,
             edges=edges,
             max_dt=config.eval_max_time_delta,
+            max_observation_width=config.window_max_observation_width,
+            max_observation_distance=config.window_max_observation_distance,
+            max_edge_distance=config.window_max_edge_distance,
         )
         if not observations:
             raise RuntimeError("No usable window observations found for window alignment")
@@ -95,13 +100,26 @@ class WindowAlignStage(Stage):
         out_csv = output_dir / OUTPUT_CSV
         write_pose_csv(out_csv, timestamps, corrected_xyz, corrected_quats)
         _write_observations(output_dir / OBSERVATIONS_CSV, observations)
+        _write_skipped(output_dir / SKIPPED_CSV, skipped)
 
         transform = {
             "base_trajectory": str(base_traj_path),
+            "start_alignment_enabled": bool(config.align_start_position),
+            "base_coordinate_frame": (
+                "map"
+                if config.align_start_position
+                else "openvins_world_cam0"
+            ),
             "floorplan_edges": str(edges_path),
             "selected_frames": str(metadata_path),
             "window_pose_dir": str(window_pose_dir),
             "observations": len(observations),
+            "skipped_observations": len(skipped),
+            "filters": {
+                "max_observation_width_m": float(config.window_max_observation_width),
+                "max_observation_distance_m": float(config.window_max_observation_distance),
+                "max_edge_distance_m": float(config.window_max_edge_distance),
+            },
             "points": int(len(source_points)),
             "yaw_correction_deg": math.degrees(yaw),
             "translation_correction_m": {
@@ -119,8 +137,17 @@ class WindowAlignStage(Stage):
 
         log_lines = [
             f"Base trajectory: {base_traj_path} ({len(timestamps)} poses)",
+            (
+                "Start alignment: enabled; Window observations are projected in map frame"
+                if config.align_start_position
+                else (
+                    "Start alignment: disabled; Window observations are projected in "
+                    "OpenVINS-world cam0 coordinates before floorplan matching"
+                )
+            ),
             f"Floorplan edges: {edges_path} ({len(edges)} segments)",
             f"Window observations: {len(observations)} frames / {len(source_points)} points",
+            f"Skipped window observations: {len(skipped)}",
             f"Yaw correction: {math.degrees(yaw):+.3f} deg",
             f"Translation correction: dx={translation[0]:+.3f}, dy={translation[1]:+.3f} m",
             f"Point residual RMS: {transform['rms_point_residual_m']:.4f} m",
@@ -131,6 +158,29 @@ class WindowAlignStage(Stage):
         for line in log_lines:
             print(f"[{self.name}] {line}")
         return output_dir
+
+
+def _resolve_base_trajectory(config: StageConfig) -> Path:
+    """Return the cam0 trajectory produced by the align stage.
+
+    The Window observations are camera-relative, so the base trajectory must be
+    the align-stage CSV. That stage always converts OpenVINS IMU poses to cam0
+    and, when requested, applies the initial-position map transform.
+    """
+    try:
+        path = stage_output_path(config, "align") / BASE_TRAJECTORY_CSV
+    except Exception as exc:
+        raise FileNotFoundError(
+            "Window alignment requires align/trajectory_aligned.csv. "
+            "Run the `align` stage before `window_align`."
+        ) from exc
+    if path.is_file():
+        return path
+    raise FileNotFoundError(
+        f"Window alignment requires {path}. Run `slam align` before `window_align`; "
+        "include --align-start-position to place the Window pipeline in the initial "
+        "map frame."
+    )
 
 
 def _load_edges(path: Path) -> np.ndarray:
@@ -172,27 +222,66 @@ def _build_observations(
     traj_quats: np.ndarray,
     edges: np.ndarray,
     max_dt: float,
-) -> list[dict]:
+    max_observation_width: float,
+    max_observation_distance: float,
+    max_edge_distance: float,
+) -> tuple[list[dict], list[dict]]:
     observations = []
+    skipped = []
     for summary_path in sorted((window_pose_dir / "pose").glob("*/pose_summary.json")):
         frame = summary_path.parent.name
         timestamp = frame_timestamps.get(frame)
         if timestamp is None:
+            skipped.append({"frame": frame, "reason": "missing_frame_timestamp"})
             continue
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        reason = _window_summary_rejection_reason(
+            summary,
+            max_observation_width=max_observation_width,
+            max_observation_distance=max_observation_distance,
+        )
+        if reason is not None:
+            skipped.append({"frame": frame, "reason": reason})
+            continue
         try:
             bottom_left = np.asarray(summary["bottom_left_m"], dtype=float)
             bottom_right = np.asarray(summary["bottom_right_m"], dtype=float)
         except KeyError:
+            skipped.append({"frame": frame, "reason": "missing_bottom_points"})
             continue
         traj_idx = int(np.argmin(np.abs(traj_t - timestamp)))
         dt = float(traj_t[traj_idx] - timestamp)
         if abs(dt) > max_dt:
+            skipped.append(
+                {
+                    "frame": frame,
+                    "reason": f"timestamp_dt_exceeds_limit:{dt:.6f}",
+                }
+            )
             continue
-        observed_bl = _window_point_to_map_xy(traj_xyz[traj_idx], traj_quats[traj_idx], bottom_left)
-        observed_br = _window_point_to_map_xy(traj_xyz[traj_idx], traj_quats[traj_idx], bottom_right)
+        observed_bl = _window_point_to_map_xy(
+            traj_xyz[traj_idx],
+            traj_quats[traj_idx],
+            bottom_left,
+        )
+        observed_br = _window_point_to_map_xy(
+            traj_xyz[traj_idx],
+            traj_quats[traj_idx],
+            bottom_right,
+        )
         target_bl, edge_bl, dist_bl = nearest_point_on_segments(observed_bl, edges)
         target_br, edge_br, dist_br = nearest_point_on_segments(observed_br, edges)
+        if max(dist_bl, dist_br) > max_edge_distance:
+            skipped.append(
+                {
+                    "frame": frame,
+                    "reason": (
+                        "edge_distance_exceeds_limit:"
+                        f"bl={dist_bl:.3f},br={dist_br:.3f}"
+                    ),
+                }
+            )
+            continue
         observations.append(
             {
                 "frame": frame,
@@ -209,7 +298,41 @@ def _build_observations(
                 "dist_br": dist_br,
             }
         )
-    return observations
+    return observations, skipped
+
+
+def _window_summary_rejection_reason(
+    summary: dict,
+    *,
+    max_observation_width: float,
+    max_observation_distance: float,
+) -> str | None:
+    try:
+        bottom_left = np.asarray(summary["bottom_left_m"], dtype=float)
+        bottom_right = np.asarray(summary["bottom_right_m"], dtype=float)
+    except KeyError:
+        return "missing_bottom_points"
+    if bottom_left.shape != (3,) or bottom_right.shape != (3,):
+        return "invalid_bottom_point_shape"
+    if not np.isfinite(bottom_left).all() or not np.isfinite(bottom_right).all():
+        return "nonfinite_bottom_points"
+
+    local_distance = max(float(np.linalg.norm(bottom_left)), float(np.linalg.norm(bottom_right)))
+    if local_distance > max_observation_distance:
+        return f"local_distance_exceeds_limit:{local_distance:.3f}"
+
+    width_candidates = [
+        float(np.linalg.norm(bottom_right - bottom_left)),
+        float(summary.get("estimated_width_m", 0.0) or 0.0),
+        float(summary.get("estimated_width_horizontal_m", 0.0) or 0.0),
+    ]
+    finite_widths = [abs(value) for value in width_candidates if np.isfinite(value)]
+    if not finite_widths:
+        return "nonfinite_width"
+    width = max(finite_widths)
+    if width > max_observation_width:
+        return f"width_exceeds_limit:{width:.3f}"
+    return None
 
 
 def _window_point_to_map_xy(cam_xyz: np.ndarray, cam_quat: np.ndarray, point: np.ndarray) -> np.ndarray:
@@ -264,4 +387,17 @@ def _write_observations(path: Path, observations: list[dict]) -> None:
                     f"{obs['dist_bl']:.9f}",
                     f"{obs['dist_br']:.9f}",
                 ]
+            )
+
+
+def _write_skipped(path: Path, skipped: list[dict]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["frame", "reason"])
+        writer.writeheader()
+        for item in skipped:
+            writer.writerow(
+                {
+                    "frame": item.get("frame", ""),
+                    "reason": item.get("reason", ""),
+                }
             )

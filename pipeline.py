@@ -400,6 +400,24 @@ Adding Custom Stages:
         default=2.0,
         help="Camera height in meters for window_pose (default: 2.0)",
     )
+    window_group.add_argument(
+        "--window-max-observation-width",
+        type=float,
+        default=10.0,
+        help="Reject window alignment observations wider than this many meters (default: 10.0)",
+    )
+    window_group.add_argument(
+        "--window-max-observation-distance",
+        type=float,
+        default=50.0,
+        help="Reject window alignment observations with local points farther than this many meters (default: 50.0)",
+    )
+    window_group.add_argument(
+        "--window-max-edge-distance",
+        type=float,
+        default=8.0,
+        help="Reject window observations whose endpoints are farther than this many meters from matched walls (default: 8.0)",
+    )
 
     combined_group = parser.add_argument_group("Combined realignment options")
     combined_group.add_argument(
@@ -511,6 +529,9 @@ def main():
         window_box_threshold=args.window_box_threshold,
         window_text_threshold=args.window_text_threshold,
         window_camera_height=args.window_camera_height,
+        window_max_observation_width=args.window_max_observation_width,
+        window_max_observation_distance=args.window_max_observation_distance,
+        window_max_edge_distance=args.window_max_edge_distance,
         floorplan_realign_weight=args.floorplan_realign_weight,
         window_realign_weight=args.window_realign_weight,
     )
