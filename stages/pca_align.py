@@ -1,14 +1,23 @@
-"""Align a SLAM trajectory using PCA-derived axes."""
+"""PCA-align an already CSV-converted trajectory."""
 
+import csv
+import shutil
+import tempfile
 from pathlib import Path
 
-from runtime_backend import ExecutionSpec
+import numpy as np
 
-from .base import Stage, StageConfig
+from ._geometry import quat_to_rot, rot_to_quat
+from .base import Stage, StageConfig, stage_output_path
+
+INPUT_CSV = "trajectory_aligned.csv"
+OUTPUT_CSV = "trajectory_pca_aligned.csv"
+MATRIX_TXT = "pca_alignment_matrix.txt"
+INFO_TXT = "pca_alignment_info.txt"
 
 
 class PcaAlignStage(Stage):
-    """Create a PCA-aligned trajectory from trajectory.txt."""
+    """Reorient an aligned trajectory using PCA-derived axes."""
 
     @property
     def name(self) -> str:
@@ -16,57 +25,154 @@ class PcaAlignStage(Stage):
 
     @property
     def description(self) -> str:
-        return "Align SLAM trajectory using PCA"
+        return "PCA-align the CSV trajectory after initial pose alignment"
+
+    @property
+    def requires_container(self) -> bool:
+        return False
+
+    @property
+    def container_profile(self) -> str:
+        return "host"
 
     @property
     def input_type(self) -> str:
-        return "trajectory"
+        return "trajectory_csv"
 
     @property
     def output_type(self) -> str:
-        return "trajectory"
+        return "trajectory_csv"
 
-    def run(
-        self,
-        runner,
-        input_dir: Path,
-        config: StageConfig,
-    ) -> Path:
-        """Read trajectory.txt, compute PCA alignment, and overwrite trajectory.txt."""
+    def run(self, runner, input_dir: Path, config: StageConfig) -> Path:
+        input_csv = _find_input_csv(input_dir, config)
+        timestamps, positions, quats = _load_pose_csv(input_csv)
 
-        align_script = """#!/usr/bin/env python3
-import os
-import sys
+        mean, basis, eigenvalues = _build_pca_basis(positions)
+        anchor_idx, anchor_source = _resolve_anchor_idx(timestamps, config)
+        anchor_position = positions[anchor_idx].copy()
+        aligned_positions = (positions - anchor_position) @ basis + anchor_position
 
-import numpy as np
+        # Position rows are multiplied by `basis`, so column-vector rotations
+        # need the equivalent world-frame transform `basis.T`.
+        pca_world_from_original = basis.T
+        aligned_quats = np.empty_like(quats)
+        for idx, quat in enumerate(quats):
+            corrected_rot = pca_world_from_original @ quat_to_rot(*quat)
+            aligned_quats[idx] = rot_to_quat(corrected_rot)
 
-INPUT_PATH = "/input/trajectory.txt"
-OUTPUT_PATH = "/output/trajectory.txt"
-MATRIX_PATH = "/output/pca_alignment_matrix.txt"
-INFO_PATH = "/output/pca_alignment_info.txt"
+        stage_root = Path(
+            tempfile.mkdtemp(prefix=f"{self.name}-", dir=runner.runtime_dir)
+        )
+        output_dir = stage_root / "output"
+        if input_dir.exists():
+            shutil.copytree(input_dir, output_dir, dirs_exist_ok=True)
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        output_csv = output_dir / OUTPUT_CSV
+        _write_pose_csv(output_csv, timestamps, aligned_positions, aligned_quats)
+        np.savetxt(output_dir / MATRIX_TXT, basis, fmt="%.9f")
+
+        log_lines = [
+            f"Input trajectory: {input_csv} ({len(timestamps)} poses)",
+            f"Output trajectory: {output_csv}",
+            f"Anchor: index={anchor_idx}, source={anchor_source}, position={anchor_position.tolist()}",
+            f"Mean: {mean.tolist()}",
+            f"Eigenvalues: {eigenvalues.tolist()}",
+            f"Basis matrix: {output_dir / MATRIX_TXT}",
+        ]
+        (output_dir / INFO_TXT).write_text(
+            "\n".join(
+                [
+                    f"points={len(timestamps)}",
+                    f"anchor_index={anchor_idx}",
+                    f"anchor_source={anchor_source}",
+                    f"anchor_position={anchor_position.tolist()}",
+                    f"mean={mean.tolist()}",
+                    f"eigenvalues={eigenvalues.tolist()}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / f"{self.name}.log").write_text(
+            "\n".join(log_lines) + "\n", encoding="utf-8"
+        )
+        (output_dir / f"{self.name}.status").write_text("0", encoding="utf-8")
+        for line in log_lines:
+            print(f"[{self.name}] {line}")
+
+        return output_dir
 
 
-def load_trajectory():
-    header_lines = []
+def _find_input_csv(input_dir: Path, config: StageConfig) -> Path:
+    candidate = input_dir / INPUT_CSV
+    if candidate.is_file():
+        return candidate
+    try:
+        candidate = stage_output_path(config, "align") / INPUT_CSV
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+    raise FileNotFoundError(
+        f"Could not find {INPUT_CSV}. Run the align stage before pca_align."
+    )
+
+
+def _load_pose_csv(path: Path):
     rows = []
-    with open(INPUT_PATH, "r", encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
+    with path.open(encoding="utf-8", newline="") as handle:
+        for raw_line in handle:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
                 continue
-            if stripped.startswith("#"):
-                header_lines.append(line.rstrip("\\n"))
+            parts = stripped.replace(",", " ").split()
+            try:
+                values = [float(part) for part in parts]
+            except ValueError:
                 continue
-            parts = stripped.split()
-            if len(parts) < 8:
+            if len(values) != 8:
                 continue
-            rows.append(parts[:8])
+            rows.append(values)
     if len(rows) < 2:
-        raise RuntimeError("Not enough trajectory rows to align")
-    return header_lines, rows
+        raise ValueError(f"Need at least two pose rows for PCA alignment: {path}")
+    arr = np.asarray(rows, dtype=float)
+    return arr[:, 0], arr[:, 1:4], arr[:, 4:8]
 
 
-def build_rotation(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _resolve_anchor_idx(timestamps: np.ndarray, config: StageConfig):
+    if config.align_start_position:
+        original_input = config.extra.get("current_input_path", "")
+        if original_input:
+            initial_pose_path = Path(original_input) / "initial-pos.txt"
+            if initial_pose_path.is_file():
+                try:
+                    initial_ts = _load_initial_timestamp(initial_pose_path)
+                    idx = int(np.argmin(np.abs(timestamps - initial_ts)))
+                    return idx, f"initial-pos.txt timestamp {initial_ts:.9f}"
+                except Exception as exc:
+                    print(
+                        f"[pca_align] WARNING: failed to read {initial_pose_path}: {exc}; "
+                        "falling back to first pose anchor"
+                    )
+    return 0, "first trajectory pose"
+
+
+def _load_initial_timestamp(path: Path) -> float:
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.replace(",", " ").split()
+            if len(parts) < 1:
+                continue
+            return float(parts[0])
+    raise ValueError(f"No timestamp row found in {path}")
+
+
+def _build_pca_basis(points: np.ndarray):
     mean = points.mean(axis=0)
     centered = points - mean
 
@@ -102,77 +208,29 @@ def build_rotation(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
         tertiary = -tertiary
         secondary = -secondary
 
-    rotation = np.column_stack((primary, secondary, tertiary))
-    return mean, rotation, eigenvalues
+    basis = np.column_stack((primary, secondary, tertiary))
+    return mean, basis, eigenvalues
 
 
-def main() -> None:
-    if not os.path.exists(INPUT_PATH):
-        raise FileNotFoundError("/input/trajectory.txt not found")
-
-    os.makedirs("/output", exist_ok=True)
-    headers, rows = load_trajectory()
-
-    positions = np.array([[float(row[1]), float(row[2]), float(row[3])] for row in rows], dtype=np.float64)
-    orientations = np.array([[float(row[4]), float(row[5]), float(row[6]), float(row[7])] for row in rows], dtype=np.float64)
-
-    mean, rotation, eigenvalues = build_rotation(positions)
-    aligned_positions = (positions - mean) @ rotation
-
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as handle:
-        if headers:
-            for header in headers:
-                handle.write(header + "\\n")
-        else:
-            handle.write("# timestamp tx ty tz qx qy qz qw\\n")
-
-        for row, aligned_position, orientation in zip(rows, aligned_positions, orientations):
-            timestamp = row[0]
-            handle.write(
-                f"{timestamp} "
-                f"{aligned_position[0]:.9f} {aligned_position[1]:.9f} {aligned_position[2]:.9f} "
-                f"{orientation[0]:.9f} {orientation[1]:.9f} {orientation[2]:.9f} {orientation[3]:.9f}\\n"
+def _write_pose_csv(
+    path: Path,
+    timestamps: np.ndarray,
+    positions: np.ndarray,
+    quats: np.ndarray,
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["# timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"])
+        for timestamp, position, quat in zip(timestamps, positions, quats):
+            writer.writerow(
+                [
+                    f"{timestamp:.9f}",
+                    f"{position[0]:.9f}",
+                    f"{position[1]:.9f}",
+                    f"{position[2]:.9f}",
+                    f"{quat[0]:.9f}",
+                    f"{quat[1]:.9f}",
+                    f"{quat[2]:.9f}",
+                    f"{quat[3]:.9f}",
+                ]
             )
-
-    np.savetxt(MATRIX_PATH, rotation, fmt="%.9f")
-    with open(INFO_PATH, "w", encoding="utf-8") as handle:
-        handle.write(f"points={len(rows)}\\n")
-        handle.write(f"mean={mean.tolist()}\\n")
-        handle.write(f"eigenvalues={eigenvalues.tolist()}\\n")
-
-    print(f"[pca_align] Wrote {OUTPUT_PATH}")
-    print(f"[pca_align] Wrote {MATRIX_PATH}")
-    print(f"[pca_align] Wrote {INFO_PATH}")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"[pca_align] ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
-"""
-
-        wrapper_script = """#!/bin/bash
-set +e
-mkdir -p /output
-cp -r /input/. /output/ 2>/dev/null || true
-python3 /stage_runtime/pca_align.py 2>&1 | tee /output/pca_align.log
-STATUS=${PIPESTATUS[0]}
-echo "$STATUS" > /output/pca_align.status
-exit 0
-"""
-
-        return runner.run_stage(
-            container_profile=self.container_profile,
-            input_dir=input_dir,
-            config=config,
-            spec=ExecutionSpec(
-                stage_name=self.name,
-                command=["/bin/bash", "/stage_runtime/run_pca_align.sh"],
-                files={
-                    "pca_align.py": align_script,
-                    "run_pca_align.sh": wrapper_script,
-                },
-            ),
-        )

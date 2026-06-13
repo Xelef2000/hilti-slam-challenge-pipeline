@@ -1,15 +1,47 @@
-"""Overlay a SLAM trajectory on top of a floorplan image."""
+"""Floorplan overlay stage - renders the final aligned trajectory on the floorplan PNG.
 
-import base64
+Mirrors the rendering convention used by rework/Floorplan-Alignment/src/
+vizualize_results_global_alignment.py: convert world meters to PNG pixels at
+100 px/m, then `imshow(np.flipud(img), origin="lower")` so the world's +y axis
+points up on the rendered image.
+
+The trajectory is taken from the most-refined output available:
+  1. trajectory_floor_aligned.csv (floorplan_align)
+  2. trajectory_pca_aligned.csv   (pca_align)
+  3. trajectory_aligned.csv       (align)
+
+The PNG is taken from:
+  1. <input>/<input_name>.png  (e.g., data/floor_1/floor_1.png)
+  2. <input>/floorplan.png
+
+If <input>/groundtruth.txt exists, it is rendered in orange as the reference
+trajectory (cam0 pose in map; same units / convention as our output).
+"""
+
+import tempfile
 from pathlib import Path
+from typing import Tuple
 
-from runtime_backend import ExecutionSpec
+# Force a non-interactive backend before pyplot is imported - matplotlib must
+# not try to open a window when running headless.
+import matplotlib
+import numpy as np
 
-from .base import Stage, StageConfig
+matplotlib.use("Agg")
+import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
+
+from .base import Stage, StageConfig, stage_output_path
+
+OUTPUT_PNG = "overlay.png"
+
+# Dataset convention - the reference scripts assume 100 px per meter when
+# converting between world coordinates and the floorplan PNG.
+PIXELS_PER_METER = 100.0
 
 
 class FloorplanOverlayStage(Stage):
-    """Render a placeholder floorplan overlay from trajectory data."""
+    """Render the final aligned trajectory on the floorplan PNG."""
 
     @property
     def name(self) -> str:
@@ -17,215 +49,300 @@ class FloorplanOverlayStage(Stage):
 
     @property
     def description(self) -> str:
-        return "Overlay SLAM trajectory on a floorplan image"
+        return "Render the final aligned trajectory on the floorplan PNG"
 
     @property
-    def input_type(self) -> str:
-        return "trajectory"
+    def requires_container(self) -> bool:
+        return False
 
     @property
-    def output_type(self) -> str:
-        return "directory"
+    def container_profile(self) -> str:
+        return "host"
 
-    def run(
-        self,
-        runner,
-        input_dir: Path,
-        config: StageConfig,
-    ) -> Path:
-        """Render floorplan overlay image.
+    def run(self, runner, input_dir: Path, config: StageConfig) -> Path:
+        png_path = _find_floorplan_png(config)
+        traj_path, traj_kind = _find_trajectory(input_dir, config)
 
-        Expected input: a directory containing `trajectory.txt`.
-        Optional floorplan source:
-          - `--floorplan` host path (injected into container)
-          - `/input/floorplan.(png|jpg|jpeg)`
-          - `/input/map.(png|jpg|jpeg)`
-        """
+        # Optional "before" trajectory for comparison.
+        before_traj_path = None
+        if traj_kind == "floor_aligned":
+            try:
+                candidate = stage_output_path(config, "align") / "trajectory_aligned.csv"
+                if candidate.is_file():
+                    before_traj_path = candidate
+            except Exception:
+                pass
+        elif traj_kind == "pca_aligned":
+            try:
+                candidate = stage_output_path(config, "align") / "trajectory_aligned.csv"
+                if candidate.is_file():
+                    before_traj_path = candidate
+            except Exception:
+                pass
 
-        floorplan_hint = str(config.extra.get("floorplan_path", "") or "")
-        floorplan_payload = ""
-        floorplan_ext = ".png"
-
-        if floorplan_hint:
-            host_floorplan = Path(floorplan_hint).expanduser()
-            if host_floorplan.is_file():
-                floorplan_payload = base64.b64encode(host_floorplan.read_bytes()).decode("ascii")
-                floorplan_ext = host_floorplan.suffix.lower() or ".png"
-            elif config.verbose:
-                print(
-                    "[floorplan_overlay] WARNING: --floorplan path not found on host "
-                    f"(will try to resolve inside input): {host_floorplan}"
-                )
-
-        render_script = f"""#!/usr/bin/env python3
-import base64
-import os
-import sys
-from pathlib import Path
-
-import cv2
-import numpy as np
-
-
-TRAJECTORY_PATH = Path("/input/trajectory.txt")
-OUTPUT_PATH = Path("/output/floorplan_overlay.png")
-FLOORPLAN_HINT = {floorplan_hint!r}
-FLOORPLAN_EXT = {floorplan_ext!r}
-
-
-def load_floorplan() -> tuple[np.ndarray, str]:
-    candidates: list[str] = []
-
-    cli_b64 = Path("/stage_runtime/floorplan_cli.b64")
-    if cli_b64.exists():
+        # Optional floorplan_edges overlay (sanity check that the world->pixel
+        # mapping is consistent between the DXF-derived edges and the PNG).
+        edges_path = None
         try:
-            payload = cli_b64.read_text(encoding="utf-8").strip()
-            if payload:
-                suffix = FLOORPLAN_EXT if FLOORPLAN_EXT.startswith(".") else f".{{FLOORPLAN_EXT}}"
-                cli_path = Path("/tmp/floorplan_cli").with_suffix(suffix)
-                cli_path.write_bytes(base64.b64decode(payload))
-                candidates.append(str(cli_path))
-        except Exception as exc:
-            print(f"[floorplan_overlay] WARNING: Failed to decode CLI floorplan: {{exc}}")
+            candidate = stage_output_path(config, "floorplan_edges") / "floorplan_edges.csv"
+            if candidate.is_file():
+                edges_path = candidate
+        except Exception:
+            pass
 
-    if FLOORPLAN_HINT:
-        hint_path = Path(FLOORPLAN_HINT)
-        if hint_path.is_absolute():
-            candidates.append(str(hint_path))
-        else:
-            candidates.append(str(Path("/input") / hint_path))
-            candidates.append(str(Path("/output") / hint_path))
+        # Optional ground-truth trajectory from the input folder. Same TUM format
+        # as our aligned output; should overlay directly at 100 px/m.
+        gt_path = None
+        original_input_str = config.extra.get("current_input_path", "")
+        if original_input_str:
+            candidate = Path(original_input_str) / "groundtruth.txt"
+            if candidate.is_file():
+                gt_path = candidate
 
-    candidates.extend(
-        [
-            "/input/floorplan.png",
-            "/input/floorplan.jpg",
-            "/input/floorplan.jpeg",
-            "/input/map.png",
-            "/input/map.jpg",
-            "/input/map.jpeg",
+        traj_xy = _load_traj_xy(traj_path)
+        before_xy = _load_traj_xy(before_traj_path) if before_traj_path is not None else None
+        edges = _load_edges(edges_path) if edges_path is not None else None
+        gt_xy = _load_traj_xy(gt_path) if gt_path is not None else None
+
+        stage_root = Path(
+            tempfile.mkdtemp(prefix=f"{self.name}-", dir=runner.runtime_dir)
+        )
+        output_dir = stage_root / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_png = output_dir / OUTPUT_PNG
+
+        _render(
+            png_path=png_path,
+            traj_xy_m=traj_xy,
+            traj_label=f"trajectory ({traj_kind})",
+            before_xy_m=before_xy,
+            edges_m=edges,
+            gt_xy_m=gt_xy,
+            out_path=out_png,
+            title=(
+                f"Floorplan overlay - {config.extra.get('current_input_name', 'run')} "
+                f"({len(traj_xy)} poses)"
+            ),
+        )
+
+        log_lines = [
+            f"PNG: {png_path}",
+            f"Trajectory: {traj_path} ({traj_kind}, {len(traj_xy)} poses)",
+            (
+                f"Before-comparison trajectory: {before_traj_path}"
+                if before_traj_path is not None
+                else "Before-comparison trajectory: (none; rendering corrected trajectory only)"
+            ),
+            (
+                f"Floorplan edges: {edges_path} ({len(edges)} segments)"
+                if edges is not None
+                else "Floorplan edges: (none; rendering trajectory only)"
+            ),
+            (
+                f"Ground truth: {gt_path} ({len(gt_xy)} poses)"
+                if gt_xy is not None
+                else "Ground truth: (none; drop groundtruth.txt in the input folder to enable)"
+            ),
+            f"Pixels per meter: {PIXELS_PER_METER}",
+            f"Output: {out_png}",
         ]
-    )
+        (output_dir / f"{self.name}.log").write_text(
+            "\n".join(log_lines) + "\n", encoding="utf-8"
+        )
+        (output_dir / f"{self.name}.status").write_text("0", encoding="utf-8")
+        for line in log_lines:
+            print(f"[{self.name}] {line}")
 
+        return output_dir
+
+
+def _find_floorplan_png(config: StageConfig) -> Path:
+    original = config.extra.get("current_input_path", "")
+    if not original:
+        raise RuntimeError("current_input_path not set in config.extra")
+    original_dir = Path(original)
+    name = config.extra.get("current_input_name", "")
+
+    candidates = []
+    if name:
+        candidates.append(original_dir / f"{name}.png")
+    candidates.append(original_dir / "floorplan.png")
     for candidate in candidates:
-        candidate_path = Path(candidate)
-        if not candidate_path.exists():
-            continue
-        image = cv2.imread(str(candidate_path), cv2.IMREAD_COLOR)
-        if image is not None:
-            return image, str(candidate_path)
-
-    placeholder = np.full((1200, 1200, 3), 245, dtype=np.uint8)
-    for value in range(0, 1201, 80):
-        cv2.line(placeholder, (value, 0), (value, 1200), (230, 230, 230), 1)
-        cv2.line(placeholder, (0, value), (1200, value), (230, 230, 230), 1)
-    cv2.putText(
-        placeholder,
-        "Placeholder floorplan",
-        (30, 60),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (120, 120, 120),
-        2,
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "No floorplan PNG found. Looked in: "
+        + ", ".join(str(c) for c in candidates)
+        + ". Drop a PNG named '<input_folder_name>.png' (or 'floorplan.png') "
+          "into the input folder."
     )
-    return placeholder, "generated_placeholder"
 
 
-def load_points() -> np.ndarray:
-    if not TRAJECTORY_PATH.exists():
-        raise FileNotFoundError("/input/trajectory.txt not found")
+def _find_trajectory(input_dir: Path, config: StageConfig) -> Tuple[Path, str]:
+    candidate = input_dir / "trajectory_floor_aligned.csv"
+    if candidate.is_file():
+        return candidate, "floor_aligned"
+    try:
+        path = stage_output_path(config, "floorplan_align") / "trajectory_floor_aligned.csv"
+        if path.is_file():
+            return path, "floor_aligned"
+    except Exception:
+        pass
+    candidate = input_dir / "trajectory_pca_aligned.csv"
+    if candidate.is_file():
+        return candidate, "pca_aligned"
+    try:
+        path = stage_output_path(config, "pca_align") / "trajectory_pca_aligned.csv"
+        if path.is_file():
+            return path, "pca_aligned"
+    except Exception:
+        pass
+    try:
+        path = stage_output_path(config, "align") / "trajectory_aligned.csv"
+        if path.is_file():
+            return path, "aligned"
+    except Exception:
+        pass
+    raise FileNotFoundError(
+        "No trajectory found. Expected floorplan_align/trajectory_floor_aligned.csv "
+        "or pca_align/trajectory_pca_aligned.csv or align/trajectory_aligned.csv"
+    )
 
-    points: list[tuple[float, float]] = []
-    with TRAJECTORY_PATH.open("r", encoding="utf-8") as handle:
+
+def _load_traj_xy(path: Path) -> np.ndarray:
+    """Return (N, 2) array of (x, y) positions in meters."""
+    rows = []
+    with path.open(encoding="utf-8") as handle:
         for line in handle:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            parts = stripped.split()
-            if len(parts) < 8:
+            parts = stripped.replace(",", " ").split()
+            try:
+                vals = [float(p) for p in parts]
+            except ValueError:
                 continue
-            points.append((float(parts[1]), float(parts[2])))
-
-    if len(points) < 2:
-        raise RuntimeError("Not enough points in trajectory.txt to draw overlay")
-
-    return np.array(points, dtype=np.float32)
-
-
-def draw_overlay(floorplan: np.ndarray, points: np.ndarray) -> np.ndarray:
-    canvas = floorplan.copy()
-    height, width = canvas.shape[:2]
-    padding = max(20, int(min(height, width) * 0.05))
-
-    min_xy = points.min(axis=0)
-    max_xy = points.max(axis=0)
-    range_x = max(float(max_xy[0] - min_xy[0]), 1e-6)
-    range_y = max(float(max_xy[1] - min_xy[1]), 1e-6)
-
-    scale = min((width - 2 * padding) / range_x, (height - 2 * padding) / range_y)
-    draw_points = []
-    for x_coord, y_coord in points:
-        px = int((x_coord - min_xy[0]) * scale + padding)
-        py = int((max_xy[1] - y_coord) * scale + padding)
-        draw_points.append([px, py])
-
-    polyline = np.array(draw_points, dtype=np.int32).reshape((-1, 1, 2))
-    cv2.polylines(canvas, [polyline], isClosed=False, color=(40, 40, 220), thickness=3)
-
-    start = tuple(polyline[0][0])
-    end = tuple(polyline[-1][0])
-    cv2.circle(canvas, start, 8, (0, 180, 0), -1)
-    cv2.circle(canvas, end, 8, (0, 0, 220), -1)
-
-    return canvas
+            if len(vals) != 8:
+                continue
+            rows.append((vals[1], vals[2]))
+    if not rows:
+        raise ValueError(f"No pose rows found in {path}")
+    return np.asarray(rows, dtype=float)
 
 
-def main() -> None:
-    os.makedirs("/output", exist_ok=True)
-    points = load_points()
-    floorplan, source = load_floorplan()
-    overlay = draw_overlay(floorplan, points)
+def _load_edges(path: Path) -> np.ndarray:
+    """Return (M, 4) array of (x1, y1, x2, y2) edge endpoints in meters."""
+    rows = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("x1"):
+                continue
+            parts = stripped.replace(",", " ").split()
+            try:
+                vals = [float(p) for p in parts]
+            except ValueError:
+                continue
+            if len(vals) != 4:
+                continue
+            rows.append(vals)
+    return np.asarray(rows, dtype=float)
 
-    if not cv2.imwrite(str(OUTPUT_PATH), overlay):
-        raise RuntimeError("Failed to write floorplan_overlay.png")
 
-    print(f"[floorplan_overlay] Wrote {{OUTPUT_PATH}}")
-    print(f"[floorplan_overlay] Floorplan source: {{source}}")
-    print(f"[floorplan_overlay] Points drawn: {{len(points)}}")
+def _render(
+    png_path: Path,
+    traj_xy_m: np.ndarray,
+    traj_label: str,
+    before_xy_m,
+    edges_m,
+    gt_xy_m,
+    out_path: Path,
+    title: str,
+) -> None:
+    img = mpimg.imread(str(png_path))
+    h, w = img.shape[:2]
 
+    fig, ax = plt.subplots(figsize=(14, 9))
+    cmap = "gray" if img.ndim == 2 else None
+    ax.imshow(np.flipud(img), origin="lower", cmap=cmap, extent=(0, w, 0, h))
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"[floorplan_overlay] ERROR: {{exc}}", file=sys.stderr)
-        sys.exit(1)
-"""
+    if edges_m is not None and len(edges_m) > 0:
+        for x1, y1, x2, y2 in edges_m:
+            ax.plot(
+                [x1 * PIXELS_PER_METER, x2 * PIXELS_PER_METER],
+                [y1 * PIXELS_PER_METER, y2 * PIXELS_PER_METER],
+                color="#8888ff",
+                linewidth=0.8,
+                alpha=0.6,
+                zorder=2,
+            )
 
-        wrapper_script = """#!/bin/bash
-set +e
-mkdir -p /output
-cp -r /input/. /output/ 2>/dev/null || true
-python3 /stage_runtime/render_floorplan_overlay.py 2>&1 | tee /output/floorplan_overlay.log
-STATUS=${PIPESTATUS[0]}
-echo "$STATUS" > /output/floorplan_overlay.status
-exit 0
-"""
-
-        files = {
-            "render_floorplan_overlay.py": render_script,
-            "run_floorplan_overlay.sh": wrapper_script,
-        }
-        if floorplan_payload:
-            files["floorplan_cli.b64"] = floorplan_payload
-
-        return runner.run_stage(
-            container_profile=self.container_profile,
-            input_dir=input_dir,
-            config=config,
-            spec=ExecutionSpec(
-                stage_name=self.name,
-                command=["/bin/bash", "/stage_runtime/run_floorplan_overlay.sh"],
-                files=files,
-            ),
+    if gt_xy_m is not None and len(gt_xy_m) > 0:
+        ax.plot(
+            gt_xy_m[:, 0] * PIXELS_PER_METER,
+            gt_xy_m[:, 1] * PIXELS_PER_METER,
+            color="#ff8800",
+            linewidth=2.2,
+            alpha=0.9,
+            label=f"ground truth ({len(gt_xy_m)} poses)",
+            zorder=3,
         )
+        ax.scatter(
+            gt_xy_m[0, 0] * PIXELS_PER_METER,
+            gt_xy_m[0, 1] * PIXELS_PER_METER,
+            color="#ff8800",
+            marker="s",
+            s=70,
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=5,
+        )
+
+    if before_xy_m is not None and len(before_xy_m) > 0:
+        ax.plot(
+            before_xy_m[:, 0] * PIXELS_PER_METER,
+            before_xy_m[:, 1] * PIXELS_PER_METER,
+            color="gray",
+            linewidth=1.0,
+            linestyle="--",
+            alpha=0.7,
+            label="trajectory (aligned, pre floorplan_align)",
+            zorder=3,
+        )
+
+    tx_px = traj_xy_m[:, 0] * PIXELS_PER_METER
+    ty_px = traj_xy_m[:, 1] * PIXELS_PER_METER
+    ax.plot(tx_px, ty_px, color="#00d0ff", linewidth=1.8, label=traj_label, zorder=4)
+    ax.scatter(
+        tx_px[0],
+        ty_px[0],
+        color="#00cc44",
+        marker="o",
+        s=90,
+        label="start",
+        edgecolors="black",
+        linewidths=0.8,
+        zorder=5,
+    )
+    ax.scatter(
+        tx_px[-1],
+        ty_px[-1],
+        color="#ff3333",
+        marker="X",
+        s=110,
+        label="end",
+        edgecolors="black",
+        linewidths=0.8,
+        zorder=5,
+    )
+
+    ax.set_xlim(0, w)
+    ax.set_ylim(0, h)
+    ax.set_aspect("equal")
+    ax.set_xlabel("image x [px]")
+    ax.set_ylabel("image y [px]")
+    ax.set_title(title)
+    ax.legend(loc="upper right", framealpha=0.85, fontsize=9)
+
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)

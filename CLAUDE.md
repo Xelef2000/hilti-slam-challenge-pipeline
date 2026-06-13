@@ -21,11 +21,9 @@ pip install -r requirements.txt
 # List available stages
 python pipeline.py --list-stages
 
-# Run stitching on a bag
-python pipeline.py --stages stitch --input data/floor_1/2025-05-05/run_1/rosbag
-
-# Run SLAM (uses original dual fisheye cameras)
-python pipeline.py --stages slam --input data/floor_1/2025-05-05/run_1/rosbag --output results/
+# Run SLAM. --input is a run folder containing a 'rosbag/' subdir.
+# Output is written to <output>/<stage>/<input_folder_name>/, e.g. ./out/slam/floor_1/
+python pipeline.py --stages slam --input data/floor_1 --output ./out
 ```
 
 ## Architecture
@@ -36,11 +34,9 @@ The pipeline is modular with stages defined in `stages/`:
 
 | Stage | Description | Input Topics | Output |
 |-------|-------------|--------------|--------|
-| `stitch` | Dual fisheye to 360° equirectangular | `/cam0/...`, `/cam1/...` | rosbag with `/pano/...` |
-| `convert` | ROS2 bag to EuRoC format | `/cam0/...`, `/cam1/...` | euroc directory |
 | `slam` | OpenVINS visual-inertial SLAM | `/cam0/...`, `/cam1/...` | trajectory.txt |
 
-**Important**: `stitch` and `slam` are independent stages. SLAM requires the original dual fisheye topics (`/cam0/image_raw/compressed`, `/cam1/image_raw/compressed`), NOT the stitched panorama.
+SLAM consumes the original dual fisheye topics (`/cam0/image_raw/compressed`, `/cam1/image_raw/compressed`) and `/imu/data_raw`.
 
 ### Data Flow
 ```
@@ -56,8 +52,7 @@ Host: Results exported to --output directory
 ### Key Files
 - `pipeline.py` - Main orchestrator with CLI
 - `stages/base.py` - Stage base class and registry
-- `stages/stitch.py`, `convert.py`, `slam.py` - Built-in stages
-- `stages/example_custom.py` - Template for custom stages
+- `stages/slam.py`, `stages/slam_runner.py` - SLAM stage and in-container runtime
 
 ### Adding Custom Stages
 
@@ -104,26 +99,23 @@ from .my_stage import MyStage
 registry.register(MyStage())
 ```
 
-3. Run: `python pipeline.py --stages my_stage --input <bag>`
+3. Run: `python pipeline.py --stages my_stage --input <run_folder>`
 
 ## CLI Reference
 
 ```bash
-# Basic usage
-python pipeline.py --stages <stage1> [stage2 ...] --input <path> [--output <dir>]
-
-# Stitching options
---no-torch          # Use OpenCV instead of PyTorch
---device auto|cpu|cuda
---jpeg-quality 95   # 1-100
+# Basic usage. <run_folder> must contain a 'rosbag/' subdirectory.
+python pipeline.py --stages slam --input <run_folder> [--output <dir>]
 
 # SLAM options
 --slam-rate 1.0     # Playback rate (<1 for slower processing)
 --slam-timeout 600  # Seconds before timeout
 
-# Process multiple bags (use quotes for glob)
-python pipeline.py --stages slam --input "data/floor_*/*/rosbag"
+# Process multiple run folders (use quotes for glob)
+python pipeline.py --stages slam --input "data/floor_*"
 ```
+
+Output layout: `<output>/<stage>/<input_folder_name>/` (e.g. `out/slam/floor_1/`).
 
 ## Container Details
 
@@ -137,8 +129,6 @@ Data is mounted at runtime, not copied into the container.
 ## Challenge Tools Reference
 
 Scripts from `hilti-trimble-slam-challenge-2026` used by stages:
-- `bag_helper/image_stitching.py` - Fisheye stitching (EUCM/Pinhole models)
-- `bag_helper/ros2bag_to_euroc.py` - Format conversion
 - `config/hilti_openvins/` - Camera calibration and SLAM config
 
 ## Output Format
