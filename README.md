@@ -2,15 +2,16 @@
 
 Containerized ROS2 pipeline for the Hilti-Trimble SLAM Challenge 2026.
 
-This project runs stage-based processing on ROS2 bag data using a native Python execution backend with Docker or Apptainer, while keeping input bags on the host filesystem.
+This project runs a staged SLAM, floorplan, Window-detection, realignment, overlay, and evaluation workflow on ROS2 bag data. ROS-heavy stages run in Docker or Apptainer, while host-only geometry and Window stages read and write normal filesystem artifacts.
 
 ## What This Pipeline Does
 
-- Orchestrates processing stages from a single CLI (`pipeline.py`)
+- Orchestrates the full processing chain from a single CLI (`pipeline.py`)
 - Runs ROS tooling in a reproducible container workspace
-- Supports stage chaining (`stitch`, `slam`, `plot_path`, etc.)
-- Targets ROS-native perception stages that consume bag topics via subscribers
-- Supports PCA-based trajectory alignment as an intermediate step
+- Extracts floorplan wall edges and image line rays for floorplan-based realignment
+- Runs an optional Window detection/segmentation flow and derives a second realignment
+- Combines floorplan and Window realignments with configurable weights
+- Renders overlays and evaluates the final trajectory against ground truth
 - Preserves per-stage logs/status files for debugging
 - Exports artifacts to a structured output directory per bag
 
@@ -20,97 +21,189 @@ This project runs stage-based processing on ROS2 bag data using a native Python 
 pipeline.py                # CLI entrypoint + orchestration
 stages/                    # Stage implementations
   base.py                  # Stage interfaces + config
-  stitch.py                # Fisheye -> equirectangular ROS bag
-  convert.py               # ROS2 bag -> EuRoC format
+  all.py                   # Aggregate full-pipeline stage
   slam.py                  # OpenVINS SLAM stage wrapper
   slam_runner.py           # In-container SLAM runtime + diagnostics
-  pca_align.py             # PCA-based trajectory alignment
-  plot_path.py             # Render trajectory image
-  floorplan_overlay.py     # Overlay trajectory on floorplan placeholder/image
-  clean.py                 # Host-side output cleanup stage
+  align.py                 # SLAM-to-cam0 CSV conversion and optional start alignment
+  pca_align.py             # Optional PCA trajectory reorientation
+  line_extractor.py        # Containerized image-line extraction wrapper
+  floorplan_edges.py       # DXF wall-segment extraction
+  rays.py                  # Camera line back-projection
+  floorplan_align.py       # Floorplan-based trajectory realignment
+  window_*.py              # Window image-flow, pose, alignment, and overlay stages
+  combined_*.py            # Weighted realignment fusion and overlay
+  final_eval.py            # Ground-truth evaluation
+  final_output.py          # Final artifact collector
 data/                      # Example ROS2 bag inputs
 results/                   # Common output location
+requirements-window.txt    # Window container Python dependencies
+third_party/window/        # Vendored Window source: GroundingDINO, SAM3, py360convert
 Dockerfile.workspace       # ROS2/OpenVINS workspace image
-Dockerfile.windows.*       # Transitional image-only window pipeline images
-third_party/windows_pipeline/ # Vendored GroundingDINO / SAM3 / py360convert
+Dockerfile.window          # Window/GroundingDINO/SAM runtime image
+container_defs/workspace.def # ROS Apptainer/Singularity definition
+container_defs/window.def  # Window Apptainer/Singularity definition
 ```
 
-## Requirements
+## Getting Started
 
-- Python `>=3.10`
-- Docker for Docker runtime execution, and optionally for faster Apptainer image conversion
-- Apptainer or Singularity for `--container-runtime apptainer`
-- Network access for first workspace image build (clones challenge repos)
-- Network access for the first `window_dino` run (downloads the GroundingDINO checkpoint)
-- Recommended local environment: Python virtual environment (`venv`)
-- For `window_*` GPU runs: NVIDIA GPU, `nvidia-smi`, and runtime GPU support (`docker --gpus all` or `apptainer/singularity --nv`)
-
-## Window Detection Direction
-
-The intended long-term integration for window detection is a ROS-native stage that:
-
-- subscribes directly to bag-replayed image topics inside the container
-- runs detection/segmentation from ROS callbacks instead of from a standalone image file
-- optionally consumes IMU or SLAM pose topics for downstream projection
-- exports masks, boxes, debug images, and per-frame metadata to the stage output directory
-
-In practice, that means the preferred architecture is:
-
-1. a ROS-enabled container profile that contains both the existing ROS workspace and the vendored ML stack
-2. a `window_detect_ros` stage with `requires_ros_runtime = True`
-3. a ROS2 node that subscribes to camera topics during `ros2 bag play`
-4. optional downstream stages such as `window_project` for floor projection or SLAM alignment
-
-The current `window_dino`, `window_sam`, and `window_rectify` stages are a transitional, file-based integration used to stabilize the vendored model stack before moving the full window pipeline into the ROS execution model.
-
-## Setup
-
-### Fresh Clone
+### 1. Clone the Repository
 
 ```bash
 git clone <your-repo-url> hilti-slam-challenge-pipeline
 cd hilti-slam-challenge-pipeline
 ```
 
-### Python Environment
+### 2. Install Required Host Dependencies
 
-Use a standard virtual environment. The project no longer assumes Conda.
+Required on the host:
+
+- Python `>=3.10`
+- `pip` and `venv`
+- Docker, or Apptainer/Singularity
+- Network access for the first container image build
+- Host Python packages from `requirements.txt`: `numpy`, `ezdxf`, `matplotlib`
+
+Recommended for development:
+
+- `pytest`
+- `ruff`
+
+Create the local Python environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-
-# Runtime dependencies
 pip install -r requirements.txt
-
-# Optional: dev tools (pytest, ruff)
 pip install -e ".[dev]"
 ```
-
-### Host Prerequisites
-
-Pick the subset you need:
-
-- Docker for Docker runtime execution and for the fastest Apptainer conversion path
-- Apptainer or Singularity for `--container-runtime apptainer`
-- `nvidia-smi` for GPU runs
-- network access for first-time model/image downloads
 
 Quick checks:
 
 ```bash
 python --version
-docker --version
-apptainer --version   # or singularity --version
-nvidia-smi            # only required for GPU runs
+python -c "import numpy, ezdxf, matplotlib"
 ```
 
-### Runtime Dependency Notes
+### 3. Install or Configure a Container Runtime
 
-- `windows` and `windows_rosbag` do not require `numpy` in the host venv to run successfully
-- host-side `numpy` is only used opportunistically for richer bundle statistics in `windows/metadata.json`
-- container images carry the ML stack; the host venv only needs the Python orchestration dependencies
+The ROS/OpenVINS stages run in a container. You need one of these:
+
+- Docker for `--container-runtime docker` (default)
+- Apptainer or Singularity for `--container-runtime apptainer`
+
+Check the runtime:
+
+```bash
+docker --version
+apptainer --version   # or singularity --version
+```
+
+The ROS container includes ROS Jazzy, OpenVINS, challenge packages, OpenCV, `cv_bridge`, `rosbag2_py`, and the in-container Python packages needed by `slam`, `line_extractor`, and `image_selector`.
+
+### 4. Configure the Window Pipeline Dependencies
+
+The Window stages run in a separate `window-workspace:repo-local-v2` container. The required Window source code is vendored in this repository:
+
+```text
+third_party/window/
+  GroundingDINO/
+  sam3/
+  py360convert/
+```
+
+Python dependencies are installed into `/opt/window_venv` during the Window container build from `requirements-window.txt`. The large model files are not checked into Git:
+
+- GroundingDINO downloads `groundingdino_swint_ogc.pth` into `.cache/window-models/` on first use.
+- SAM3 and transformer assets download through Hugging Face into `.cache/window-models/huggingface/`.
+
+The default source path is `third_party/window`. Override it only if you need a different checkout:
+
+```bash
+python pipeline.py ... --window-root /path/to/window-code
+```
+
+`window_sam` loads Meta SAM3 from the gated Hugging Face repository `facebook/sam3`.
+Before running `window_sam` or `all`, export a Hugging Face access token that has been granted access to that model, unless the SAM3 checkpoint is already cached in the Window runtime environment:
+
+```bash
+export HF_TOKEN=...
+```
+
+Do not commit or paste the token into tracked files. If the token is missing or does not have SAM3 access, the stage fails while downloading `config.json` or `sam3.pt`. Downloaded models remain in `.cache/window-models/`, which is ignored by Git.
+
+CUDA is optional. Use `--window-device auto`, `--window-device cpu`, or `--window-device cuda`.
+With Docker, only `--window-device cuda` requests `docker run --gpus all`. The default `auto` is CPU-safe for GroundingDINO and does not request Docker GPU access.
+
+### 5. Prepare an Input Run Folder
+
+Each `--input` is a run folder. It must contain a ROS2 bag:
+
+```text
+data/floor_1/
+  rosbag/
+    metadata.yaml
+    rosbag.db3
+```
+
+Additional files are required by specific stages:
+
+- `initial-pos.txt`: required only when `--align-start-position` is used.
+- At least one `*.dxf` file: required by `floorplan_edges`; if multiple exist, the first sorted path is used.
+- `floorplan_offset.txt`: optional `(offset_x, offset_y)` in meters for the DXF floorplan edges.
+- `<input_folder_name>.png` or `floorplan.png`: required by overlay stages.
+- `groundtruth.txt`: required by `final_eval`.
+
+The main camera/IMU topics expected by the container stages are:
+
+- `/cam0/image_raw/compressed`
+- `/cam1/image_raw/compressed`
+- `/imu/data_raw`
+
+### 6. Run the Pipeline
+
+Show available stages:
+
+```bash
+python pipeline.py --list-stages
+```
+
+Run the full pipeline:
+
+```bash
+export HF_TOKEN=...  # required by window_sam/all unless SAM3 is cached locally
+
+python pipeline.py --stages all --align-start-position \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --floorplan-realign-weight 1.0 \
+  --window-realign-weight 0.1 \
+  --slam-rate 0.5 --window-device cpu
+```
+
+Run the full pipeline with start alignment, optional PCA, and weighted combined realignment:
+
+```bash
+export HF_TOKEN=...  # required by window_sam/all unless SAM3 is cached locally
+
+python pipeline.py --stages all --align-start-position --include-pca-align \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --floorplan-realign-weight 1.0 \
+  --window-realign-weight 0.1 \
+  --slam-rate 0.5 --window-device cpu
+```
+
+Run only SLAM:
+
+```bash
+python pipeline.py --stages slam \
+  --input data/floor_1 \
+  --output ./out \
+  --slam-rate 0.5
+```
 
 ## Image Build Flows
 
@@ -118,175 +211,49 @@ nvidia-smi            # only required for GPU runs
 
 For Docker runs, the pipeline builds images on demand:
 
-- `slam-workspace:latest` from `Dockerfile.workspace`
-- `windows-pipeline-cpu:latest` from `Dockerfile.windows.cpu`
-- `windows-pipeline-gpu:latest` from `Dockerfile.windows.gpu`
+- `slam-workspace:latest` from `Dockerfile.workspace` for ROS/OpenVINS stages
+- `window-workspace:repo-local-v2` from `Dockerfile.window` for Window/GroundingDINO/SAM stages
 
 You can also build them manually:
 
 ```bash
 docker build -t slam-workspace:latest -f Dockerfile.workspace .
-docker build -t windows-pipeline-cpu:latest -f Dockerfile.windows.cpu .
-docker build -t windows-pipeline-gpu:latest -f Dockerfile.windows.gpu .
+docker build -t window-workspace:repo-local-v2 -f Dockerfile.window .
 ```
 
 ### Apptainer Runtime
 
 For Apptainer runs, the backend tries these paths in order:
 
-1. use a prebuilt `.sif` from environment variables
+1. use a prebuilt `.sif` from `PIPELINE_APPTAINER_ROS_IMAGE`
 2. if Docker is available, convert a Docker image/archive into `.sif`
-3. if Docker is not available, build from native definition files in `container_defs/`
+3. if Docker is not available, build from `container_defs/workspace.def`
 
-Supported override variables:
+Override:
 
 ```bash
 export PIPELINE_APPTAINER_ROS_IMAGE=/path/to/slam-workspace.sif
-export PIPELINE_APPTAINER_WINDOWS_CPU_IMAGE=/path/to/windows-pipeline-cpu.sif
-export PIPELINE_APPTAINER_WINDOWS_GPU_IMAGE=/path/to/windows-pipeline-gpu.sif
+export PIPELINE_APPTAINER_WINDOW_IMAGE=/path/to/window-workspace.sif
 ```
-
-Only set the images you actually need.
 
 ### Recommended Apptainer Build Workflow
 
-If Docker is available on the build machine, this is the most reliable path:
-
-```bash
-docker build --no-cache -t windows-pipeline-gpu:latest -f Dockerfile.windows.gpu .
-docker save windows-pipeline-gpu:latest -o windows-pipeline-gpu.tar
-apptainer build windows-pipeline-gpu.sif docker-archive://$(pwd)/windows-pipeline-gpu.tar
-```
-
-For CPU:
-
-```bash
-docker build --no-cache -t windows-pipeline-cpu:latest -f Dockerfile.windows.cpu .
-docker save windows-pipeline-cpu:latest -o windows-pipeline-cpu.tar
-apptainer build windows-pipeline-cpu.sif docker-archive://$(pwd)/windows-pipeline-cpu.tar
-```
-
-For the ROS workspace:
+If Docker is available on the build machine:
 
 ```bash
 docker build -t slam-workspace:latest -f Dockerfile.workspace .
+docker build -t window-workspace:repo-local-v2 -f Dockerfile.window .
 docker save slam-workspace:latest -o slam-workspace.tar
+docker save window-workspace:repo-local-v2 -o window-workspace-repo-local-v2.tar
 apptainer build slam-workspace.sif docker-archive://$(pwd)/slam-workspace.tar
+apptainer build window-workspace-repo-local-v2.sif docker-archive://$(pwd)/window-workspace-repo-local-v2.tar
 ```
 
-If Docker is not available but Apptainer build is permitted, build from definition files directly:
+If Docker is not available but Apptainer build is permitted:
 
 ```bash
-apptainer build windows-pipeline-gpu.sif container_defs/windows_gpu.def
-apptainer build windows-pipeline-cpu.sif container_defs/windows_cpu.def
 apptainer build slam-workspace.sif container_defs/workspace.def
-```
-
-### Validate a Fresh GPU Window Image
-
-Before copying a new GPU `.sif` anywhere, validate the Docker image locally:
-
-```bash
-docker run --rm windows-pipeline-gpu:latest \
-  python -c "import torch; print(torch.__version__); print(torch.version.cuda)"
-
-docker run --rm windows-pipeline-gpu:latest \
-  python -c "import cv2, groundingdino, sam3; print('imports ok')"
-```
-
-For the current GPU image, expected values are:
-
-- `torch 2.7.0+cu128`
-- `CUDA 12.8`
-
-## First-Run Behavior
-
-- the first SLAM run builds the ROS workspace image if missing
-- the first window run builds either the CPU or GPU window image if missing
-- the first GroundingDINO run downloads `groundingdino_swint_ogc.pth` automatically
-- `window_sam` still needs either:
-  - `HF_TOKEN` with access to gated `facebook/sam3`, or
-  - `--sam3-checkpoint /absolute/path/to/sam3.pt`
-
-Example:
-
-```bash
-export HF_TOKEN=<your_token>
-```
-
-or:
-
-```bash
-python pipeline.py --stages windows \
-  --input /path/to/image.png \
-  --output results/ \
-  --windows-device cuda \
-  --sam3-checkpoint /absolute/path/to/sam3.pt
-```
-
-These image-only stages are still transitional. The long-term target remains a ROS-native subscriber-based window stage.
-
-## Cluster / Prebuilt SIF Deployment
-
-On systems where local `apptainer build` is restricted, build `.sif` files on another machine and copy them over.
-
-Example copy to ETH cluster:
-
-```bash
-scp windows-pipeline-gpu.sif \
-  fniederer@student-cluster1.inf.ethz.ch:/work/courses/3dv/team6/hilti-slam-challenge-pipeline/
-```
-
-Then on the target system:
-
-```bash
-export PIPELINE_APPTAINER_WINDOWS_GPU_IMAGE=/work/courses/3dv/team6/hilti-slam-challenge-pipeline/windows-pipeline-gpu.sif
-```
-
-Run the pipeline normally after that.
-
-## Quick Start
-
-```bash
-# Show available stages
-python pipeline.py --list-stages
-
-# Run SLAM only
-python pipeline.py --stages slam \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5
-
-# SLAM + rendered trajectory image
-python pipeline.py --stages slam plot_path \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5
-
-# SLAM + PCA alignment + rendered trajectory image
-python pipeline.py --stages pca_align plot_path \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5
-
-# SLAM + floorplan overlay placeholder
-python pipeline.py --stages slam floorplan_overlay \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5
-
-# Public file-based window pipeline on CPU
-python pipeline.py --stages windows \
-  --input /path/to/input.png \
-  --output results/ \
-  --windows-device cpu
-
-# Public ROS2 bag window pipeline
-python pipeline.py --stages windows_rosbag \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --container-runtime apptainer \
-  --windows-device cuda
+apptainer build window-workspace.sif container_defs/window.def
 ```
 
 ## CLI Reference
@@ -297,95 +264,277 @@ python pipeline.py --help
 
 Key arguments:
 
-- `--stages/-s`: ordered stage list to run
-- `--input/-i`: one or more bag paths (supports quoted globs)
-- `--output/-o`: output root directory
+- `--stages/-s`: ordered stage list to run (default: `slam`). Use `all` to run the complete pipeline.
+- `--input/-i`: one or more run folders that each contain a `rosbag/` subdir (supports quoted globs)
+- `--output/-o`: output root directory (default: `./out`). Each stage writes to `<output>/<stage>/<input_folder_name>/`.
 - `--container-runtime {docker,apptainer}`: execution backend
   `apptainer` mode accepts either the `apptainer` or `singularity` host binary
 - `--list-stages/-l`: print stages and exit
+- `--align-start-position`: use `initial-pos.txt` in the `align` stage to place the CSV trajectory in the map frame
+- `--include-pca-align`: when using `all`, insert `pca_align` immediately after `align`
+- `--eval-max-dt`: maximum timestamp difference for `final_eval` matches in seconds (default: `0.05`)
 - `--verbose/-v`: extra console output
 
-Stitching options:
+Parallel Window image-flow options:
 
-- `--no-torch`: force OpenCV stitching path
-- `--device {auto,cpu,cuda}`: torch device
-- `--jpeg-quality`: stitched JPEG quality
+- `--image-frames`: comma-separated frame numbers/ranges for `image_selector`, e.g. `10,20,30-35`
+- `--image-topic`: preferred image topic for `image_selector` (default: `/cam0/image_raw/compressed`)
+- `--window-root`: path to the Window source directory (default: `third_party/window`)
+- `--window-prompt`: GroundingDINO text prompt (default: `windows`)
+- `--window-device {auto,cpu,cuda}`: device for Window DINO/SAM stages
+- `--window-box-threshold`, `--window-text-threshold`: GroundingDINO thresholds
+- `--window-camera-height`: camera height in meters for `window_pose`
+
+Combined realignment options:
+
+- `--floorplan-realign-weight`: weight for the floorplan realignment in `combined_align` (default: `1.0`)
+- `--window-realign-weight`: weight for the Window realignment in `combined_align` (default: `1.0`)
 
 SLAM options:
 
 - `--slam-rate`: bag playback rate (use `<1.0` if init is unstable)
 - `--slam-timeout`: hard timeout in seconds (`0` disables)
 
-Visualization options:
-
-- `--floorplan`: optional host path to floorplan image for `floorplan_overlay`
-
-Window segmentation options:
-
-- `--windows-device {auto,cpu,cuda}`: device for `windows` / `window_*` stages
-- `--windows-prompt`: GroundingDINO prompt
-- `--windows-box-threshold`: GroundingDINO box threshold
-- `--windows-text-threshold`: GroundingDINO text threshold
-- `--sam3-checkpoint`: optional local SAM3 checkpoint path for the transitional file-based pipeline
-- `--windows-topic`: preferred image topic for `windows_rosbag` extraction
-- `--windows-frame-index`: frame index for `windows_rosbag` extraction (`-1` means middle frame)
-
 ## Stages
 
 | Stage | Purpose | Typical Input | Typical Output |
 |---|---|---|---|
-| `stitch` | Convert dual fisheye streams to panorama topics | ROS2 bag | stitched ROS2 bag (`rosbag_pano`) |
-| `convert` | Export ROS2 bag to EuRoC layout | ROS2 bag | EuRoC directory |
+| `all` | Expand to the complete dependency-ordered pipeline | Run folder | All stage artifacts |
 | `slam` | Run OpenVINS visual-inertial SLAM | ROS2 bag with `cam0/cam1 + imu` | `trajectory.txt` + SLAM logs |
-| `pca_align` | Reorient trajectory using PCA axes | `trajectory.txt` | aligned `trajectory.txt` |
-| `plot_path` | Draw 2D trajectory image | `trajectory.txt` | `trajectory_path.png` |
-| `floorplan_overlay` | Draw trajectory over floorplan image | `trajectory.txt` (+ optional floorplan image) | `floorplan_overlay.png` |
-| `clean` | Remove output directory for the input run | output folder as input | cleaned host output |
-| `windows` | Public normalized window-perception bundle | image file | `windows/metadata.json` + canonical artifacts |
-| `windows_rosbag` | Public normalized window-perception bundle from a ROS2 bag | ROS2 bag | `windows/metadata.json` + canonical artifacts |
-| `windows_extract` | Internal bag-to-image adapter for window inference | ROS2 bag | extracted `input.png` + source metadata |
-| `window_dino` | Transitional file-based window box detection | image file | `grounding_dino/bb.npy` + previews |
-| `window_sam` | Transitional file-based SAM3 segmentation | image file or `window_dino` output | `windows_masks.npy`, `windows_segmented.png` |
-| `window_rectify` | Transitional file-based mask rectification | `window_sam` output | `undistorted/mask_undistorted.png` |
+| `align` | Convert SLAM IMU poses to cam0 CSV; optionally align to `initial-pos.txt` | `slam` output + run folder | `trajectory_aligned.csv` |
+| `pca_align` | Reorient the aligned CSV trajectory using PCA axes | `align` output | `trajectory_pca_aligned.csv` + PCA diagnostics |
+| `line_extractor` | Extract near-horizontal cam0 line detections | Run folder ROS2 bag | `lines.csv` |
+| `floorplan_edges` | Extract wall segments from the run DXF | Run folder DXF | `floorplan_edges.csv` |
+| `rays` | Back-project line detections using aligned poses | `line_extractor` + `align` outputs | `rays.csv` |
+| `floorplan_align` | Refine trajectory against floorplan edges | `rays`, `floorplan_edges`, `align` outputs | `trajectory_floor_aligned.csv` |
+| `floorplan_overlay` | Render final trajectory on the floorplan PNG | floorplan PNG + final trajectory | `overlay.png` |
+| `image_selector` | Extract selected camera frames from the ROS2 bag | run folder + `--image-frames` | `images/frame_*.png` |
+| `window_dino` | Run Window GroundingDINO on selected frames | `image_selector` output | per-frame `grounding_dino/*/bb.npy` |
+| `window_sam` | Run Window SAM3 on DINO boxes | `window_dino` output | per-frame `sam3/*/windows_masks.npy` |
+| `window_rectify` | Rectify Window SAM3 masks | `window_sam` output | per-frame `rectified/*/mask_undistorted.png` |
+| `window_pose` | Compute Window mask-derived window pose metrics | `window_sam` output | `window_pose_summary.csv` |
+| `window_align` | Realign trajectory from selected-frame window detections | `window_pose`, `align`, `floorplan_edges` outputs | `trajectory_window_aligned.csv` |
+| `window_overlay` | Render the Window-aligned trajectory and window constraints | floorplan PNG + `window_align` output | `window_overlay.png` |
+| `combined_align` | Fuse floorplan and Window realignments by weight | `floorplan_align`, `window_align`, `align` outputs | `trajectory_combined_aligned.csv` |
+| `combined_overlay` | Render base, floorplan, Window, and combined trajectories | all aligned trajectories | `combined_overlay.png` |
+| `final_eval` | Evaluate final trajectory against `groundtruth.txt` | final trajectory + run folder ground truth | `summary.json` + `matched_errors.csv` |
+| `final_output` | Collect final trajectories, overlays, and evaluation files | completed pipeline outputs | `manifest.json` + copied artifacts |
 
-Planned, not yet implemented:
+## Stage Reference
 
-- `window_detect_ros`: ROS-native subscriber stage for bag-replayed camera topics
-- `window_project`: downstream projection/alignment stage for window detections
+### `all`
 
-## Automatic Stage Dependencies
+Aggregate stage. It expands to the full ordered pipeline:
 
-The pipeline auto-adds dependencies when needed:
+```text
+slam -> align -> line_extractor -> floorplan_edges -> rays -> floorplan_align -> floorplan_overlay
+-> image_selector -> window_dino -> window_sam -> window_rectify -> window_pose
+-> window_align -> window_overlay -> combined_align -> combined_overlay -> final_eval -> final_output
+```
 
-- `pca_align` automatically includes `slam`
-- `plot_path` automatically includes `slam`
-- `floorplan_overlay` automatically includes `slam`
-- `windows` automatically includes `window_rectify`
-- `windows_rosbag` automatically includes `windows_extract` and `window_rectify`
-- `window_sam` automatically includes `window_dino`
-- `window_rectify` automatically includes `window_sam`
+`--include-pca-align` inserts `pca_align` immediately after `align`. Because `all` includes the Window flow, it requires `--image-frames`.
 
-If `pca_align` is explicitly included together with `plot_path` or `floorplan_overlay`, the aligned trajectory is used by downstream stages.
+### `slam`
 
-Smart skip behavior is also implemented:
+Runs OpenVINS visual-inertial odometry inside the ROS container.
 
-- If a valid `trajectory.txt` already exists in the target output for the bag, `slam` is skipped.
-- If input is a non-rosbag directory containing `trajectory.txt`, `slam` is filtered out for `plot_path`/`floorplan_overlay` runs.
+- Input: run folder with `rosbag/`.
+- Required topics: `/cam0/image_raw/compressed`, `/cam1/image_raw/compressed`, `/imu/data_raw`.
+- Key options: `--slam-rate`, `--slam-timeout`.
+- Output: `trajectory.txt`, `trajectory_ov.txt`, SLAM logs, bag diagnostics.
+- Notes: existing valid `trajectory.txt` causes the stage to skip on reruns.
+
+### `align`
+
+Converts SLAM IMU poses to cam0 pose CSV and optionally maps the trajectory into the input map frame.
+
+- Input: `slam/trajectory.txt`.
+- Optional input: `initial-pos.txt` when `--align-start-position` is enabled.
+- Output: `trajectory_aligned.csv`.
+- Notes: start alignment keeps only yaw plus translation, avoiding pitch/roll drift from calibration convention mismatch.
+
+### `pca_align`
+
+Optional PCA reorientation of the CSV trajectory.
+
+- Input: `align/trajectory_aligned.csv`.
+- Enabled by: `--include-pca-align` with aggregate stages, or by running `--stages pca_align`.
+- Output: `trajectory_pca_aligned.csv`, `pca_alignment_matrix.txt`, `pca_alignment_info.txt`.
+- Notes: this is diagnostic/optional; floorplan ray matching still uses the base `align` trajectory.
+
+### `line_extractor`
+
+Detects near-horizontal line segments in cam0 frames inside the ROS container.
+
+- Input: run folder `rosbag/`.
+- Dependencies: ROS container with OpenCV, `cv_bridge`, `rosbag2_py`.
+- Output: `lines.csv`, `line_extractor.log`.
+- Notes: filters line segments by ROI, orientation, and minimum pixel length.
+
+### `floorplan_edges`
+
+Extracts 2D wall segments from the run folder DXF.
+
+- Input: first sorted `*.dxf` file in the original run folder.
+- Optional input: `floorplan_offset.txt` with two floats in meters.
+- Host dependency: `ezdxf`.
+- Output: `floorplan_edges.csv`.
+- Notes: emits meter-space wall segments used by both floorplan and window realignment.
+
+### `rays`
+
+Back-projects 2D image line detections to 3D rays in the aligned trajectory frame.
+
+- Input: `line_extractor/lines.csv`, `align/trajectory_aligned.csv`.
+- Host dependency: `numpy`.
+- Output: `rays.csv`.
+- Notes: uses fixed cam0 EUCM intrinsics from the reference alignment scripts.
+
+### `floorplan_align`
+
+Computes the floorplan-based residual trajectory correction.
+
+- Input: `rays/rays.csv`, `floorplan_edges/floorplan_edges.csv`, `align/trajectory_aligned.csv`.
+- Host dependency: `numpy`.
+- Output: `trajectory_floor_aligned.csv`, `floorplan_align.log`.
+- Notes: searches for a yaw and translation correction that best matches ray planes to floorplan wall edges.
+
+### `floorplan_overlay`
+
+Renders the floorplan-aligned trajectory on the floorplan image.
+
+- Input: floorplan PNG from `<input_name>.png` or `floorplan.png`.
+- Optional inputs: `groundtruth.txt`, `floorplan_edges.csv`.
+- Host dependencies: `matplotlib`, `numpy`.
+- Output: `overlay.png`.
+- Notes: uses the dataset convention of `100 px/m`.
+
+### `image_selector`
+
+Extracts explicit camera frame numbers from the ROS2 bag.
+
+- Input: run folder `rosbag/`.
+- Required option: `--image-frames`, for example `100,250,400` or `10,20-25`.
+- Optional option: `--image-topic`.
+- Dependencies: ROS container with OpenCV, `cv_bridge`, `rosbag2_py`.
+- Output: `images/frame_*.png`, `selected_frames.json`.
+- Notes: stores image header timestamps when available so selected frames can be matched against trajectory timestamps.
+
+### `window_dino`
+
+Runs GroundingDINO window detection on selected images.
+
+- Input: `image_selector` output.
+- Source/dependencies: `third_party/window/GroundingDINO` plus `/opt/window_venv` in the Window container.
+- Model cache: downloads `groundingdino_swint_ogc.pth` into `.cache/window-models/` if missing.
+- Key options: `--window-root`, `--window-prompt`, `--window-device`, `--window-box-threshold`, `--window-text-threshold`.
+- Output: per-frame `grounding_dino/<frame>/bb.npy`, `pred.jpg`, raw image artifacts.
+- Notes: runs in the Window container, not the ROS/OpenVINS container.
+
+### `window_sam`
+
+Runs SAM3 segmentation using the GroundingDINO boxes.
+
+- Input: `window_dino` output.
+- Source/dependencies: `third_party/window/sam3` plus `/opt/window_venv` in the Window container.
+- Required environment: `HF_TOKEN` with access to the gated `facebook/sam3` Hugging Face model, unless the SAM3 model is already cached.
+- Model cache: Hugging Face assets are stored under `.cache/window-models/huggingface/`.
+- Key option: `--window-device`.
+- Output: per-frame `sam3/<frame>/windows_masks.npy`, `windows_segmented.png`.
+
+### `window_rectify`
+
+Rectifies SAM3 window masks with `py360convert`.
+
+- Input: `window_sam` output.
+- Source/dependencies: `third_party/window/py360convert` plus `/opt/window_venv` in the Window container.
+- Output: per-frame `rectified/<frame>/mask_undistorted.png`.
+- Notes: this stage preserves the Window pipeline artifact flow; `window_pose` currently reads the SAM3 mask output.
+
+### `window_pose`
+
+Computes per-frame window geometry from SAM3 masks.
+
+- Input: `window_sam` output.
+- Source/dependencies: `/opt/window_venv` in the Window container.
+- Key option: `--window-camera-height`.
+- Output: `window_pose_summary.csv`, per-frame `pose/<frame>/pose_summary.json`, `corners_debug.png`.
+- Notes: estimates window distance, yaw, lateral offset, pitch/roll, and width metrics.
+
+### `window_align`
+
+Builds a trajectory realignment from selected-frame window detections.
+
+- Input: `window_pose` summaries, `image_selector/selected_frames.json`, `align/trajectory_aligned.csv`, `floorplan_edges/floorplan_edges.csv`.
+- Host dependency: `numpy`.
+- Output: `trajectory_window_aligned.csv`, `window_alignment_transform.json`, `window_alignment_observations.csv`.
+- Notes: converts window-relative observations into the map frame, snaps them to nearest floorplan wall segments, then solves a 2D yaw plus translation correction.
+
+### `window_overlay`
+
+Renders the window-aligned trajectory and window constraints.
+
+- Input: floorplan PNG, `window_align` outputs, `align/trajectory_aligned.csv`.
+- Host dependencies: `matplotlib`, `numpy`.
+- Output: `window_overlay.png`.
+- Notes: shows the base trajectory, window-aligned trajectory, observed window edges, and target wall-edge projections.
+
+### `combined_align`
+
+Fuses the floorplan and window realignments.
+
+- Input: `align/trajectory_aligned.csv`, `floorplan_align/trajectory_floor_aligned.csv`, `window_align/trajectory_window_aligned.csv`.
+- Key options: `--floorplan-realign-weight`, `--window-realign-weight`.
+- Output: `trajectory_combined_aligned.csv`, `combined_alignment.json`.
+- Notes: estimates each branch’s residual 2D transform relative to the same base `align` trajectory, then blends yaw and translation by weight.
+
+### `combined_overlay`
+
+Renders all trajectory variants together.
+
+- Input: base, floorplan-aligned, window-aligned, and combined trajectories.
+- Host dependencies: `matplotlib`, `numpy`.
+- Output: `combined_overlay.png`.
+- Notes: useful for visually comparing the two realignment branches against the weighted result.
+
+### `final_eval`
+
+Evaluates the best available trajectory against ground truth.
+
+- Input: `groundtruth.txt` plus the best available estimate.
+- Estimate preference order: `combined_align`, `floorplan_align`, `window_align`, `pca_align`, `align`, `slam`.
+- Key option: `--eval-max-dt`.
+- Output: `summary.json`, `matched_errors.csv`.
+- Notes: reports XY, Z, XYZ, and timestamp error statistics.
+
+### `final_output`
+
+Collects the final artifacts into a single folder.
+
+- Input: completed upstream outputs.
+- Output: copied trajectories, overlays, alignment metadata, evaluation files, and `manifest.json`.
+- Typical output folder: `<output>/final_output/<input_name>/`.
+- Notes: missing optional artifacts are listed in `manifest.json` rather than silently ignored.
+
+## Smart Skip
+
+If a valid `trajectory.txt` already exists in the target output for the run, `slam` is skipped on re-run.
 
 ## Input Conventions
 
-Expected bag layout:
+Each `--input` path is a **run folder** that contains a `rosbag/` subdirectory with the actual ROS2 bag files:
 
 ```text
-data/<site>/<date>/run_<n>/rosbag/
-  metadata.yaml
-  rosbag.db3
+data/floor_1/
+  rosbag/
+    metadata.yaml
+    rosbag.db3
 ```
 
-Example:
+Example invocation:
 
-```text
-data/floor_1/2025-05-05/run_1/rosbag
+```bash
+python pipeline.py --stages slam --input data/floor_1 --output ./out
 ```
 
 For `slam`, the bag must include:
@@ -394,19 +543,15 @@ For `slam`, the bag must include:
 - `/cam1/image_raw/compressed`
 - `/imu/data_raw`
 
-For the planned ROS-native window stage, the expected source is bag-replayed camera topics, not a dedicated standalone image file.
-
-For the current transitional `window_*` stages, pass a single image file as `--input`.
-
 ## Output Structure and Artifacts
 
-For a rosbag input, results are exported under:
+Each stage writes to `<output>/<stage>/<input_folder_name>/`. For example:
 
 ```text
-<output>/<site>_<date>_run_<n>/
+out/slam/floor_1/
 ```
 
-Common SLAM artifacts:
+SLAM artifacts:
 
 - `trajectory.txt`: TUM-like pose lines (`timestamp tx ty tz qx qy qz qw`)
 - `slam.log`: stage-level log stream
@@ -422,46 +567,16 @@ Failure artifacts:
 - Failed stage outputs are exported to `_failed/<stage_name>/`
 - For SLAM failures, `slam_diagnosis.txt` is created when a known init pattern is detected
 
-Visualization artifacts:
+Evaluation artifacts:
 
-- `trajectory_path.png` from `plot_path`
-- `floorplan_overlay.png` from `floorplan_overlay`
-
-Window segmentation artifacts:
-
-- `grounding_dino/raw_image.jpg`
-- `grounding_dino/pred.jpg`
-- `grounding_dino/bb.npy`
-- `windows_segmented.png`
-- `windows_masks.npy`
-- `undistorted/mask_undistorted.png`
-
-For the planned ROS-native window stage, expected artifacts are:
-
-- per-frame masks
-- per-frame boxes
-- debug overlays
-- optional projected floor points
-- optional ROS-topic-derived summaries
+- `summary.json`: matched-pose counts and XY/XYZ/Z/time error statistics
+- `matched_errors.csv`: per-estimate nearest-ground-truth match and error columns
 
 ## Apptainer Build Workarounds
 
-These are the concrete issues encountered during integration and the workarounds that proved useful.
-
 ### 1. `/tmp` quota too small during `apptainer build`
 
-Symptom:
-
-```text
-disk quota exceeded
-```
-
-Cause:
-
-- Apptainer unpacks OCI / Docker archives under `/tmp` by default
-- large GPU images exceed temporary storage quotas quickly
-
-Workaround:
+Apptainer unpacks OCI / Docker archives under `/tmp` by default; large images may exceed quotas.
 
 ```bash
 mkdir -p .apptainer-tmp .apptainer-cache
@@ -470,137 +585,27 @@ export TMPDIR=$PWD/.apptainer-tmp
 export APPTAINER_CACHEDIR=$PWD/.apptainer-cache
 ```
 
-Use those variables before `apptainer build`.
-
 ### 2. Cluster forbids unprivileged `%post` execution
-
-Symptom:
-
-```text
-Could not write info to setgroups: Permission denied
-Error while waiting event for user namespace mappings
-```
-
-Cause:
-
-- the cluster allows Apptainer runtime but not full unprivileged image builds for these definitions
-
-Practical workaround:
 
 - do not build the `.sif` on the cluster
 - build it on a workstation where Docker or Apptainer build works
 - copy the finished `.sif` to the cluster
-- point the pipeline at it with `PIPELINE_APPTAINER_*_IMAGE`
-
-This ended up being the reliable deployment model.
+- point the pipeline at it with `PIPELINE_APPTAINER_ROS_IMAGE`
 
 ### 3. Only `singularity` exists, not `apptainer`
 
-Symptom:
+`--container-runtime apptainer` accepts either binary; no symlink hack is required.
 
-- host has `singularity` but no `apptainer` binary
-
-Current behavior:
-
-- `--container-runtime apptainer` now accepts either binary
-- no symlink hack is required anymore
-
-### 4. No Docker on the runtime machine
-
-If Docker is unavailable:
-
-- the backend can still run with prebuilt `.sif` images
-- or attempt native `.def` builds if the machine permits them
-
-Recommended approach:
-
-- on restricted systems, treat image build and image run as separate steps
-
-### 5. Bind-mounted script permission problems
-
-Observed issues included:
-
-- Docker bind-mounted wrapper scripts not executable under SELinux
-- Apptainer output copy failures when preserving permissions
-
-Current workarounds already implemented in the repo:
+### 4. Bind-mounted script permission problems
 
 - Docker backend uses `--security-opt label=disable`
 - stage wrappers use `cp -r`, not `cp -a`
 
-### 6. GPU image compatibility on newer NVIDIA GPUs
-
-Problem we hit:
-
-- older PyTorch/CUDA stacks did not support newer GPU architectures such as `sm_120`
-
-Current fix in the repo:
-
-- GPU image uses a newer CUDA/PyTorch stack
-- local validation should always include:
+### 5. Prebuilt image override path must be real
 
 ```bash
-docker run --rm windows-pipeline-gpu:latest \
-  python -c "import torch; print(torch.__version__); print(torch.version.cuda)"
+ls -lh "$PIPELINE_APPTAINER_ROS_IMAGE"
 ```
-
-### 7. OpenCV GUI / GL / X11 issues under Apptainer
-
-Symptoms included:
-
-- `GLIBC_2.38 not found`
-- `libX11.so.6: cannot open shared object file`
-
-Current fix in the repo:
-
-- the window images use `opencv-python-headless`
-- GUI-linked OpenCV variants are removed during image build
-
-### 8. GroundingDINO weights and read-only container paths
-
-Problem:
-
-- Apptainer runtime mounted `/opt/windows_pipeline` read-only, so downloading weights into the vendored tree failed
-
-Current fix in the repo:
-
-- GroundingDINO weights auto-download into the writable stage output cache:
-  - `grounding_dino/.model_cache/`
-
-### 9. Prebuilt image override path must be real
-
-Symptom:
-
-```text
-PIPELINE_APPTAINER_WINDOWS_GPU_IMAGE points to a missing Apptainer image
-```
-
-Cause:
-
-- the environment variable pointed to a placeholder path or missing file
-
-Check first:
-
-```bash
-ls -lh "$PIPELINE_APPTAINER_WINDOWS_GPU_IMAGE"
-```
-
-PCA alignment artifacts:
-
-- `trajectory.txt`: rewritten with aligned positions
-- `pca_alignment_matrix.txt`: alignment basis matrix
-- `pca_alignment_info.txt`: point count, mean, eigenvalues
-
-## Floorplan Overlay Behavior
-
-`floorplan_overlay` tries floorplan images in this order:
-
-1. `--floorplan` host path (if provided)
-2. `/input/floorplan.(png|jpg|jpeg)`
-3. `/input/map.(png|jpg|jpeg)`
-4. Fallback generated placeholder floorplan
-
-Scaling and orientation are intentionally placeholder-level for now.
 
 ## SLAM Debugging Guide
 
@@ -614,7 +619,6 @@ If SLAM produces no trajectory:
 Recommended fixes:
 
 - Lower playback rate, e.g. `--slam-rate 0.5`
-- Ensure you run `slam` on original dual-camera bag (not stitched-only topics)
 - Re-run and inspect `_failed/slam/` artifacts
 
 Note: `stdin is not a terminal device. Keyboard handling disabled.` from `ros2 bag play` is expected in non-interactive container execution.
@@ -625,124 +629,70 @@ Note: `stdin is not a terminal device. Keyboard handling disabled.` from `ros2 b
 
 ```bash
 python pipeline.py --stages slam \
-  --input "data/floor_1/*/run_*/rosbag" \
-  --output results/
+  --input "data/floor_*" \
+  --output ./out
 ```
 
-### Force safer SLAM rate + overlay
+### Force safer SLAM rate
 
 ```bash
-python pipeline.py --stages slam floorplan_overlay \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
+python pipeline.py --stages slam \
+  --input data/floor_1 \
+  --output ./out \
   --slam-rate 0.5
 ```
 
-### PCA-align, then plot path
+### Run the complete pipeline
 
 ```bash
-python pipeline.py --stages pca_align plot_path \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5
+export HF_TOKEN=...  # required by window_sam/all unless SAM3 is cached locally
+
+python pipeline.py --stages all --align-start-position \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --floorplan-realign-weight 1.0 \
+  --window-realign-weight 0.1 \
+  --slam-rate 0.5 --window-device cpu
 ```
 
-### PCA-align, then overlay on floorplan
+### Run the complete pipeline with start and PCA alignment
 
 ```bash
-python pipeline.py --stages pca_align floorplan_overlay \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5 \
-  --floorplan ./data/floorplans/masks_no_windows/floor_1.png
+export HF_TOKEN=...  # required by window_sam/all unless SAM3 is cached locally
+
+python pipeline.py --stages all --align-start-position --include-pca-align \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --floorplan-realign-weight 1.0 \
+  --window-realign-weight 0.1 \
+  --slam-rate 0.5 --window-device cpu
 ```
 
-### Use an explicit floorplan image
+### Evaluate existing outputs
 
 ```bash
-python pipeline.py --stages slam floorplan_overlay \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --slam-rate 0.5 \
-  --floorplan /path/to/floorplan.png
+python pipeline.py --stages final_eval \
+  --input data/floor_1 \
+  --output ./out
 ```
 
-### Transitional: run only GroundingDINO on an image
+### Run the parallel Window image flow
 
 ```bash
-python pipeline.py --stages window_dino \
-  --input /path/to/input.png \
-  --output results/ \
-  --windows-device cpu
+export HF_TOKEN=...  # required by window_sam unless SAM3 is cached locally
+
+python pipeline.py \
+  --stages image_selector window_dino window_sam window_rectify window_pose window_align window_overlay \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --window-device cpu
 ```
 
-### Run the public window pipeline on GPU
-
-```bash
-python pipeline.py --stages windows \
-  --input /path/to/input.png \
-  --output results/ \
-  --windows-device cuda
-```
-
-### Force CPU fallback for the public window pipeline
-
-```bash
-python pipeline.py --stages windows \
-  --input /path/to/input.png \
-  --output results/ \
-  --windows-device cpu
-```
-
-Canonical output bundle:
-
-```text
-results/<image_stem>/windows/
-  metadata.json
-  boxes.npy
-  dino_input.jpg
-  dino_overlay.jpg
-  masks.npy
-  segmented_overlay.png
-  rectified_mask.png
-```
-
-### Run the public window pipeline on a ROS2 bag
-
-```bash
-python pipeline.py --stages windows_rosbag \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/ \
-  --container-runtime apptainer \
-  --windows-device cuda \
-  --windows-topic /cam0/image_raw/compressed \
-  --windows-frame-index -1
-```
-
-The current `windows_rosbag` implementation is a bag adapter:
-- it extracts one representative frame from the chosen image topic
-- it runs the validated image-based window stack on that frame
-- it emits the same normalized `windows/` output bundle
-
-This is the first integration step before a future ROS-native subscriber stage.
-
-### Planned ROS-native window flow
-
-```bash
-# Target direction, not yet implemented as a concrete stage name:
-# replay rosbag -> ROS subscriber node -> window detections/masks in /output
-python pipeline.py --stages window_detect_ros \
-  --input data/floor_1/2025-05-05/run_1/rosbag \
-  --output results/
-```
-
-### Clean a run output
-
-```bash
-python pipeline.py --stages clean \
-  --input results/floor_1_2025-05-05_run_1 \
-  --output results/
-```
+The Window stages can still be run independently, but they are now also included in `all`.
+The public stage and option names use `window_*`; by default `--window-root` points at the vendored source under `third_party/window`.
 
 ## Development
 
@@ -768,5 +718,4 @@ pytest
 ## Notes
 
 - Input `data/` is mounted at runtime; avoid writing processing outputs into `data/`.
-- SLAM artifacts are mirrored to the selected output and to `results/` for convenience.
-- Docker remains the image build source of truth because the repo currently ships Dockerfiles, while Apptainer runtime uses cached `.sif` images derived from those builds.
+- Docker remains the image build source of truth because the repo currently ships a Dockerfile, while Apptainer runtime uses cached `.sif` images derived from that build.
