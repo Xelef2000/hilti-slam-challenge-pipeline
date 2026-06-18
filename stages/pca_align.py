@@ -142,34 +142,7 @@ def _load_pose_csv(path: Path):
 
 
 def _resolve_anchor_idx(timestamps: np.ndarray, config: StageConfig):
-    if config.align_start_position:
-        original_input = config.extra.get("current_input_path", "")
-        if original_input:
-            initial_pose_path = Path(original_input) / "initial-pos.txt"
-            if initial_pose_path.is_file():
-                try:
-                    initial_ts = _load_initial_timestamp(initial_pose_path)
-                    idx = int(np.argmin(np.abs(timestamps - initial_ts)))
-                    return idx, f"initial-pos.txt timestamp {initial_ts:.9f}"
-                except Exception as exc:
-                    print(
-                        f"[pca_align] WARNING: failed to read {initial_pose_path}: {exc}; "
-                        "falling back to first pose anchor"
-                    )
     return 0, "first trajectory pose"
-
-
-def _load_initial_timestamp(path: Path) -> float:
-    with path.open(encoding="utf-8") as handle:
-        for raw_line in handle:
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            parts = stripped.replace(",", " ").split()
-            if len(parts) < 1:
-                continue
-            return float(parts[0])
-    raise ValueError(f"No timestamp row found in {path}")
 
 
 def _build_pca_basis(points: np.ndarray):

@@ -345,7 +345,7 @@ Adding Custom Stages:
     parser.add_argument(
         "--align-start-position",
         action="store_true",
-        help="Use initial-pos.txt to align the converted cam0 CSV trajectory to the map frame",
+        help="Use orientation.json (save_tf.py output) to align the converted cam0 CSV trajectory to the map frame",
     )
 
     parser.add_argument(
