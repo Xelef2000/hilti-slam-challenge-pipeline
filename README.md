@@ -2,6 +2,62 @@
 
 Containerized ROS2 pipeline for the Hilti-Trimble SLAM Challenge 2026.
 
+## Quick Start
+
+**Prerequisites:** Docker (or Apptainer), Python ≥ 3.10, host packages from `requirements.txt`.
+
+```bash
+pip install -r requirements.txt
+```
+
+**Run folder layout** — each input must contain a ROS2 bag and a DXF floorplan:
+
+```text
+data/floor_1/
+  rosbag/          ← ROS2 bag (metadata.yaml + .db3)
+  floor_1.dxf      ← floorplan for wall-edge extraction
+  floorplan.png    ← floorplan image for overlays
+  groundtruth.txt  ← ground-truth poses for evaluation
+```
+
+**Start a complete run:**
+
+```bash
+export HF_TOKEN=...   # Hugging Face token with facebook/sam3 access
+
+python pipeline.py --stages all --align-start-position \
+  --input data/floor_1 \
+  --output ./out \
+  --image-frames 100,250,400 \
+  --slam-rate 0.5 \
+  --window-device cpu
+```
+
+**Final output** is collected into a single folder once the pipeline finishes:
+
+```text
+out/final_output/floor_1/
+  trajectories/
+    base_aligned.csv          ← SLAM trajectory in map frame
+    floorplan_aligned.csv     ← after floorplan ray-matching correction
+    window_aligned.csv        ← after window detection correction
+    combined_aligned.csv      ← weighted fusion (best estimate to submit)
+  overlays/
+    floorplan_overlay.png     ← trajectory on floorplan (floorplan branch)
+    window_overlay.png        ← trajectory on floorplan (window branch)
+    combined_overlay.png      ← all variants overlaid
+  evaluation/
+    summary.json              ← XY/Z error statistics vs ground truth
+    matched_errors.csv        ← per-pose error breakdown
+  alignment/
+    combined_alignment.json   ← fusion transform metadata
+  manifest.json               ← index of all collected artifacts
+```
+
+`combined_aligned.csv` is the trajectory to submit. If the Window stages were skipped, use `floorplan_aligned.csv`.
+
+---
+
 This project runs a staged SLAM, floorplan, Window-detection, realignment, overlay, and evaluation workflow on ROS2 bag data. ROS-heavy stages run in Docker or Apptainer, while host-only geometry and Window stages read and write normal filesystem artifacts.
 
 ## What This Pipeline Does
@@ -24,6 +80,8 @@ stages/                    # Stage implementations
   all.py                   # Aggregate full-pipeline stage
   slam.py                  # OpenVINS SLAM stage wrapper
   slam_runner.py           # In-container SLAM runtime + diagnostics
+  save_tf.py               # Extract map->global static TF from rosbag (writes orientation.json)
+  save_tf_runner.py        # In-container save_tf runtime
   align.py                 # SLAM-to-cam0 CSV conversion and optional start alignment
   pca_align.py             # Optional PCA trajectory reorientation
   line_extractor.py        # Containerized image-line extraction wrapper
@@ -148,11 +206,12 @@ data/floor_1/
 
 Additional files are required by specific stages:
 
-- `initial-pos.txt`: required only when `--align-start-position` is used.
 - At least one `*.dxf` file: required by `floorplan_edges`; if multiple exist, the first sorted path is used.
 - `floorplan_offset.txt`: optional `(offset_x, offset_y)` in meters for the DXF floorplan edges.
 - `<input_folder_name>.png` or `floorplan.png`: required by overlay stages.
 - `groundtruth.txt`: required by `final_eval`.
+
+The map→global static TF used for start alignment is extracted automatically from the rosbag by the `save_tf` stage. No `initial-pos.txt` is required.
 
 The main camera/IMU topics expected by the container stages are:
 
@@ -270,7 +329,7 @@ Key arguments:
 - `--container-runtime {docker,apptainer}`: execution backend
   `apptainer` mode accepts either the `apptainer` or `singularity` host binary
 - `--list-stages/-l`: print stages and exit
-- `--align-start-position`: use `initial-pos.txt` in the `align` stage to place the CSV trajectory in the map frame
+- `--align-start-position`: use `orientation.json` (written by `save_tf`) in the `align` stage to place the CSV trajectory in the map frame
 - `--include-pca-align`: when using `all`, insert `pca_align` immediately after `align`
 - `--eval-max-dt`: maximum timestamp difference for `final_eval` matches in seconds (default: `0.05`)
 - `--verbose/-v`: extra console output
@@ -304,7 +363,8 @@ SLAM options:
 |---|---|---|---|
 | `all` | Expand to the complete dependency-ordered pipeline | Run folder | All stage artifacts |
 | `slam` | Run OpenVINS visual-inertial SLAM | ROS2 bag with `cam0/cam1 + imu` | `trajectory.txt` + SLAM logs |
-| `align` | Convert SLAM IMU poses to cam0 CSV; optionally align to `initial-pos.txt` | `slam` output + run folder | `trajectory_aligned.csv` |
+| `save_tf` | Extract map→global static TF from the rosbag | `slam` output (reads original bag) | `orientation.json` + passed-through slam artifacts |
+| `align` | Convert SLAM IMU poses to cam0 CSV; optionally align to `orientation.json` | `save_tf` output | `trajectory_aligned.csv` |
 | `pca_align` | Reorient the aligned CSV trajectory using PCA axes | `align` output | `trajectory_pca_aligned.csv` + PCA diagnostics |
 | `line_extractor` | Extract near-horizontal cam0 line detections | Run folder ROS2 bag | `lines.csv` |
 | `floorplan_edges` | Extract wall segments from the run DXF | Run folder DXF | `floorplan_edges.csv` |
@@ -330,7 +390,7 @@ SLAM options:
 Aggregate stage. It expands to the full ordered pipeline:
 
 ```text
-slam -> align -> line_extractor -> floorplan_edges -> rays -> floorplan_align -> floorplan_overlay
+slam -> save_tf -> align -> line_extractor -> floorplan_edges -> rays -> floorplan_align -> floorplan_overlay
 -> image_selector -> window_dino -> window_sam -> window_rectify -> window_pose
 -> window_align -> window_overlay -> combined_align -> combined_overlay -> final_eval -> final_output
 ```
@@ -347,14 +407,22 @@ Runs OpenVINS visual-inertial odometry inside the ROS container.
 - Output: `trajectory.txt`, `trajectory_ov.txt`, SLAM logs, bag diagnostics.
 - Notes: existing valid `trajectory.txt` causes the stage to skip on reruns.
 
+### `save_tf`
+
+Extracts the `map → global` static TF from the rosbag and writes `orientation.json`.
+
+- Input: original rosbag (read directly from `config.extra["current_input_path"]/rosbag/`; does not depend on slam output content).
+- Dependencies: ROS container with `rosbag2_py`, `rclpy`, `tf2_msgs`.
+- Output: `orientation.json` (4×4 `T_map_global`, translation, quaternion, yaw) plus all files passed through from the previous stage.
+- Notes: reads `/tf_static` from the bag without replaying it — no ROS daemon is started. The `orientation.json` format is identical to the output of the `save_tf.py` node in the Floorplan-Alignment repo.
+
 ### `align`
 
-Converts SLAM IMU poses to cam0 pose CSV and optionally maps the trajectory into the input map frame.
+Converts SLAM IMU poses to cam0 pose CSV and optionally maps the trajectory into the map frame.
 
-- Input: `slam/trajectory.txt`.
-- Optional input: `initial-pos.txt` when `--align-start-position` is enabled.
+- Input: `save_tf` output (contains `trajectory.txt` and `orientation.json`).
 - Output: `trajectory_aligned.csv`.
-- Notes: start alignment keeps only yaw plus translation, avoiding pitch/roll drift from calibration convention mismatch.
+- Notes: when `--align-start-position` is enabled, reads `orientation.json` written by `save_tf` and applies `T_map_global` directly; no `initial-pos.txt` or SLAM anchor matching required.
 
 ### `pca_align`
 
@@ -688,7 +756,7 @@ python pipeline.py --stages final_eval \
 export HF_TOKEN=...  # required by window_sam unless SAM3 is cached locally
 
 python pipeline.py \
-  --stages slam align floorplan_edges image_selector window_dino window_sam window_rectify window_pose window_align window_overlay \
+  --stages slam save_tf align floorplan_edges image_selector window_dino window_sam window_rectify window_pose window_align window_overlay \
   --align-start-position \
   --input data/floor_1 \
   --output ./out \
@@ -697,7 +765,7 @@ python pipeline.py \
   --window-device cpu
 ```
 
-`window_align` depends on `align/trajectory_aligned.csv` for the cam0 trajectory and `floorplan_edges/floorplan_edges.csv` for the map constraints. The command above includes those prerequisites so the Window flow uses the same initial-position map frame as the ray/floorplan flow.
+`window_align` depends on `align/trajectory_aligned.csv` for the cam0 trajectory and `floorplan_edges/floorplan_edges.csv` for the map constraints. The command above includes those prerequisites so the Window flow uses the same map frame as the ray/floorplan flow.
 The Window stages can still be run independently after those prerequisite outputs already exist, and they are also included in `all`.
 The public stage and option names use `window_*`; by default `--window-root` points at the vendored source under `third_party/window`.
 

@@ -7,6 +7,7 @@ from .base import Stage, StageConfig
 
 FULL_PIPELINE_STAGES = [
     "slam",
+    "save_tf",
     "align",
     "line_extractor",
     "floorplan_edges",
