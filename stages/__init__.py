@@ -6,7 +6,6 @@ and returns an output directory. Stages can be chained together.
 """
 
 from .align import AlignStage
-from .save_tf import SaveTfStage
 from .all import AllStage
 from .base import Stage, StageRegistry
 from .combined_align import CombinedAlignStage
@@ -31,7 +30,6 @@ from .window_sam import WindowSamStage
 registry = StageRegistry()
 registry.register(AllStage())
 registry.register(SlamStage())
-registry.register(SaveTfStage())
 registry.register(AlignStage())
 registry.register(PcaAlignStage())
 registry.register(LineExtractorStage())
@@ -57,7 +55,6 @@ __all__ = [
     "registry",
     "AllStage",
     "SlamStage",
-    "SaveTfStage",
     "AlignStage",
     "PcaAlignStage",
     "LineExtractorStage",

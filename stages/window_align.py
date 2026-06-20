@@ -340,9 +340,7 @@ def _window_point_to_map_xy(cam_xyz: np.ndarray, cam_quat: np.ndarray, point: np
     # Window pose summaries use x/lateral, y/up, z/forward in a gravity-aligned
     # camera-local frame. Project that local x/z displacement through the cam0
     # orientation so it lands in the same map xy frame as the trajectory.
-    # After removing image flips, apply 90-degree rotation correction: swap x/z and negate
-    corrected_point = np.array([-point[2], point[1], point[0]])
-    offset_xy = rotation[:2, 0] * corrected_point[0] + rotation[:2, 2] * corrected_point[2]
+    offset_xy = rotation[:2, 0] * point[0] + rotation[:2, 2] * point[2]
     return cam_xyz[:2] + offset_xy
 
 
