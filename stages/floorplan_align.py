@@ -44,6 +44,7 @@ TRANS_Y_RANGE_M = (-2.5, 2.5)
 TRANS_Y_STEPS = 11
 TRANS_Z_RANGE_M = (0.0, 0.0)
 TRANS_Z_STEPS = 1
+TRANSLATION_BOUNDARY_TOL_M = 1e-9
 
 
 class FloorplanAlignStage(Stage):
@@ -102,13 +103,22 @@ class FloorplanAlignStage(Stage):
             f"(dx,dy,dz) = ({translation[0]:+.3f}, {translation[1]:+.3f}, {translation[2]:+.3f}) m"
         )
 
-        # 4) Apply correction to every pose in the aligned trajectory.
-        traj_xyz_rot = (rotation @ traj_xyz.T).T + translation
-        traj_q_corrected = np.empty_like(traj_q)
-        for i in range(len(traj_q)):
-            R_corrected = rotation @ quat_to_rot(*traj_q[i])
-            qx, qy, qz, qw = rot_to_quat(R_corrected)
-            traj_q_corrected[i] = (qx, qy, qz, qw)
+        correction_suppressed = _translation_hits_xy_boundary(translation)
+        if correction_suppressed:
+            print(
+                "[floorplan_align] WARNING: translation optimum hit the search boundary; "
+                "suppressing floorplan correction and keeping the base trajectory"
+            )
+            traj_xyz_rot = traj_xyz.copy()
+            traj_q_corrected = traj_q.copy()
+        else:
+            # 4) Apply correction to every pose in the aligned trajectory.
+            traj_xyz_rot = (rotation @ traj_xyz.T).T + translation
+            traj_q_corrected = np.empty_like(traj_q)
+            for i in range(len(traj_q)):
+                R_corrected = rotation @ quat_to_rot(*traj_q[i])
+                qx, qy, qz, qw = rot_to_quat(R_corrected)
+                traj_q_corrected[i] = (qx, qy, qz, qw)
 
         stage_root = Path(
             tempfile.mkdtemp(prefix=f"{self.name}-", dir=runner.runtime_dir)
@@ -128,6 +138,11 @@ class FloorplanAlignStage(Stage):
             (
                 f"translation correction: dx={translation[0]:+.3f}, "
                 f"dy={translation[1]:+.3f}, dz={translation[2]:+.3f} m"
+            ),
+            (
+                "correction suppressed: yes (translation optimum hit search boundary)"
+                if correction_suppressed
+                else "correction suppressed: no"
             ),
             f"Output: {out_csv}",
         ]
@@ -374,6 +389,18 @@ def _grid_search_translation(ray_pairs, rotation: np.ndarray) -> np.ndarray:
                     best_total = total
                     best = (dx, dy, dz)
     return np.array(best)
+
+
+def _translation_hits_xy_boundary(translation: np.ndarray) -> bool:
+    x_hit = (
+        abs(float(translation[0]) - TRANS_X_RANGE_M[0]) <= TRANSLATION_BOUNDARY_TOL_M
+        or abs(float(translation[0]) - TRANS_X_RANGE_M[1]) <= TRANSLATION_BOUNDARY_TOL_M
+    )
+    y_hit = (
+        abs(float(translation[1]) - TRANS_Y_RANGE_M[0]) <= TRANSLATION_BOUNDARY_TOL_M
+        or abs(float(translation[1]) - TRANS_Y_RANGE_M[1]) <= TRANSLATION_BOUNDARY_TOL_M
+    )
+    return x_hit or y_hit
 
 
 # ---------------------------------------------------------------------------

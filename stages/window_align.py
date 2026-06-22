@@ -23,6 +23,8 @@ OBSERVATIONS_CSV = "window_alignment_observations.csv"
 SKIPPED_CSV = "window_alignment_skipped.csv"
 TRANSFORM_JSON = "window_alignment_transform.json"
 BASE_TRAJECTORY_CSV = "trajectory_aligned.csv"
+MIN_WINDOW_ALIGNMENT_OBSERVATIONS = 2
+MAX_WINDOW_ALIGNMENT_RMS_RESIDUAL_M = 1.5
 
 
 class WindowAlignStage(Stage):
@@ -74,24 +76,55 @@ class WindowAlignStage(Stage):
             max_observation_distance=config.window_max_observation_distance,
             max_edge_distance=config.window_max_edge_distance,
         )
+        fallback_reason = None
         if not observations:
-            raise RuntimeError("No usable window observations found for window alignment")
+            fallback_reason = "no usable window observations"
 
-        source_points = np.asarray(
-            [point for obs in observations for point in (obs["observed_bl"], obs["observed_br"])],
-            dtype=float,
-        )
-        target_points = np.asarray(
-            [point for obs in observations for point in (obs["target_bl"], obs["target_br"])],
-            dtype=float,
-        )
-        rotation, translation, yaw, residuals = estimate_rigid_2d(source_points, target_points)
-        corrected_xyz, corrected_quats = apply_rigid_2d_to_trajectory(
-            xyz,
-            quats,
-            rotation,
-            translation,
-        )
+        if observations:
+            source_points = np.asarray(
+                [point for obs in observations for point in (obs["observed_bl"], obs["observed_br"])],
+                dtype=float,
+            )
+            target_points = np.asarray(
+                [point for obs in observations for point in (obs["target_bl"], obs["target_br"])],
+                dtype=float,
+            )
+            rotation, translation, yaw, residuals = estimate_rigid_2d(source_points, target_points)
+            rms_residual = float(math.sqrt(np.mean(residuals * residuals)))
+            if len(observations) < MIN_WINDOW_ALIGNMENT_OBSERVATIONS:
+                fallback_reason = (
+                    f"only {len(observations)} usable observation(s); "
+                    f"need at least {MIN_WINDOW_ALIGNMENT_OBSERVATIONS}"
+                )
+            elif rms_residual > MAX_WINDOW_ALIGNMENT_RMS_RESIDUAL_M:
+                fallback_reason = (
+                    f"point residual RMS {rms_residual:.3f} m exceeds "
+                    f"{MAX_WINDOW_ALIGNMENT_RMS_RESIDUAL_M:.3f} m"
+                )
+        else:
+            source_points = np.empty((0, 2), dtype=float)
+            target_points = np.empty((0, 2), dtype=float)
+            rotation = np.eye(2)
+            translation = np.zeros(2, dtype=float)
+            yaw = 0.0
+            residuals = np.empty(0, dtype=float)
+            rms_residual = 0.0
+
+        if fallback_reason is not None:
+            corrected_xyz = xyz.copy()
+            corrected_quats = quats.copy()
+            rotation = np.eye(2)
+            translation = np.zeros(2, dtype=float)
+            yaw = 0.0
+            residuals = np.empty(0, dtype=float)
+            rms_residual = 0.0
+        else:
+            corrected_xyz, corrected_quats = apply_rigid_2d_to_trajectory(
+                xyz,
+                quats,
+                rotation,
+                translation,
+            )
 
         stage_root = Path(tempfile.mkdtemp(prefix=f"{self.name}-", dir=runner.runtime_dir))
         output_dir = stage_root / "output"
@@ -115,10 +148,14 @@ class WindowAlignStage(Stage):
             "window_pose_dir": str(window_pose_dir),
             "observations": len(observations),
             "skipped_observations": len(skipped),
+            "correction_suppressed": fallback_reason is not None,
+            "suppression_reason": fallback_reason,
             "filters": {
                 "max_observation_width_m": float(config.window_max_observation_width),
                 "max_observation_distance_m": float(config.window_max_observation_distance),
                 "max_edge_distance_m": float(config.window_max_edge_distance),
+                "min_alignment_observations": MIN_WINDOW_ALIGNMENT_OBSERVATIONS,
+                "max_alignment_rms_residual_m": MAX_WINDOW_ALIGNMENT_RMS_RESIDUAL_M,
             },
             "points": int(len(source_points)),
             "yaw_correction_deg": math.degrees(yaw),
@@ -126,9 +163,9 @@ class WindowAlignStage(Stage):
                 "x": float(translation[0]),
                 "y": float(translation[1]),
             },
-            "rms_point_residual_m": float(math.sqrt(np.mean(residuals * residuals))),
-            "mean_point_residual_m": float(np.mean(residuals)),
-            "max_point_residual_m": float(np.max(residuals)),
+            "rms_point_residual_m": rms_residual,
+            "mean_point_residual_m": float(np.mean(residuals)) if len(residuals) else 0.0,
+            "max_point_residual_m": float(np.max(residuals)) if len(residuals) else 0.0,
         }
         (output_dir / TRANSFORM_JSON).write_text(
             json.dumps(transform, indent=2, sort_keys=True) + "\n",
@@ -148,6 +185,11 @@ class WindowAlignStage(Stage):
             f"Floorplan edges: {edges_path} ({len(edges)} segments)",
             f"Window observations: {len(observations)} frames / {len(source_points)} points",
             f"Skipped window observations: {len(skipped)}",
+            (
+                f"Correction suppressed: yes ({fallback_reason})"
+                if fallback_reason is not None
+                else "Correction suppressed: no"
+            ),
             f"Yaw correction: {math.degrees(yaw):+.3f} deg",
             f"Translation correction: dx={translation[0]:+.3f}, dy={translation[1]:+.3f} m",
             f"Point residual RMS: {transform['rms_point_residual_m']:.4f} m",

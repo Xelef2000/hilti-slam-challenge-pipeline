@@ -1,42 +1,42 @@
 {
   "estimate_kind": "combined_aligned",
-  "estimate_path": "/home/felix/hilti-slam-challenge-pipeline/out/combined_align/floor_1/trajectory_combined_aligned.csv",
+  "estimate_path": "/home/felix/Projects/hilti-slam-challenge-pipeline/out/combined_align/floor_1/trajectory_combined_aligned.csv",
   "estimate_poses": 4008,
-  "groundtruth_path": "/home/felix/hilti-slam-challenge-pipeline/data/floor_1/groundtruth.txt",
+  "groundtruth_path": "/home/felix/Projects/hilti-slam-challenge-pipeline/data/floor_1/groundtruth.txt",
   "groundtruth_poses": 3923,
   "matched_poses": 3925,
   "max_time_delta_s": 0.05,
   "time_delta_abs": {
-    "max_s": 0.04176960500080895,
-    "mean_s": 0.004879383782418775,
-    "median_s": 0.004866462000791216,
-    "p90_s": 0.0057272210000519404,
-    "p95_s": 0.0069481204001931455,
-    "rmse_s": 0.004992155730454524
+    "max_s": 0.04249348099983763,
+    "mean_s": 0.0052756862293224065,
+    "median_s": 0.005144038999787881,
+    "p90_s": 0.006520306000311393,
+    "p95_s": 0.008102115600195242,
+    "rmse_s": 0.005420740155493864
   },
   "unmatched_estimate_poses": 83,
   "xy": {
-    "max_m": 9.727246489440981,
-    "mean_m": 4.595847402723209,
-    "median_m": 4.073676232655616,
-    "p90_m": 8.953043995521957,
-    "p95_m": 9.401894069059445,
-    "rmse_m": 5.474908282829713
+    "max_m": 0.6362794816860251,
+    "mean_m": 0.3088076454950481,
+    "median_m": 0.274621216026935,
+    "p90_m": 0.5152620396072735,
+    "p95_m": 0.5617745854934395,
+    "rmse_m": 0.335117839178404
   },
   "xyz": {
-    "max_m": 10.012327368729084,
-    "mean_m": 4.714173312509059,
-    "median_m": 4.093871099049445,
-    "p90_m": 9.29873965130271,
-    "p95_m": 9.70328819802828,
-    "rmse_m": 5.651300296367324
+    "max_m": 0.6520036441510856,
+    "mean_m": 0.3189627068224359,
+    "median_m": 0.28504791573644617,
+    "p90_m": 0.5219213399862712,
+    "p95_m": 0.5681505609044175,
+    "rmse_m": 0.34446991994541526
   },
   "z_abs": {
-    "max_m": 3.0286279085181373,
-    "mean_m": 0.8971077943470963,
-    "median_m": 0.17918614327480986,
-    "p90_m": 2.43184593649722,
-    "p95_m": 2.6587014763322516,
-    "rmse_m": 1.4009191034188975
+    "max_m": 0.15284833597362335,
+    "mean_m": 0.07248722118677883,
+    "median_m": 0.06910335605905482,
+    "p90_m": 0.11905330747548311,
+    "p95_m": 0.12552863980849605,
+    "rmse_m": 0.07972176372608758
   }
 }
