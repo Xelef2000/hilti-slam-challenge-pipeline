@@ -55,9 +55,9 @@ class FinalOutputStage(Stage):
                 "Weighted fusion of floorplan and window corrections",
             ),
             (
-                "overlays/floorplan_overlay.png",
+                "overlays/edge_overlay.png",
                 "floorplan_overlay", "overlay.png",
-                "Trajectory rendered on floorplan (floorplan branch)",
+                "Trajectory rendered on floorplan (edge branch)",
             ),
             (
                 "overlays/window_overlay.png",

@@ -53,7 +53,7 @@ class CombinedOverlayStage(Stage):
                 },
                 {
                     "path": floor_path,
-                    "label": "floorplan aligned",
+                    "label": "edge aligned",
                     "color": "#00a6d6",
                     "linewidth": 1.6,
                     "alpha": 0.8,

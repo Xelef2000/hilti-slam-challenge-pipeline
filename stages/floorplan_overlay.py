@@ -181,11 +181,11 @@ def _find_floorplan_png(config: StageConfig) -> Path:
 def _find_trajectory(input_dir: Path, config: StageConfig) -> Tuple[Path, str]:
     candidate = input_dir / "trajectory_floor_aligned.csv"
     if candidate.is_file():
-        return candidate, "floor_aligned"
+        return candidate, "edge_aligned"
     try:
         path = stage_output_path(config, "floorplan_align") / "trajectory_floor_aligned.csv"
         if path.is_file():
-            return path, "floor_aligned"
+            return path, "edge_aligned"
     except Exception:
         pass
     candidate = input_dir / "trajectory_pca_aligned.csv"
