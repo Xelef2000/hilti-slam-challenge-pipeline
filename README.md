@@ -9,7 +9,7 @@ Containerized ROS2 pipeline for the Hilti-Trimble SLAM Challenge 2026.
 ```bash
 pip install -r requirements.txt
 ```
-Create a custom Huggingface token, to access SAM 3 and Grounding DINO, used in the pipline.
+** IMPORTANT** Create a custom Huggingface token, to access SAM 3 and Grounding DINO, used in the pipline and export it as shown below.
 
 **Run folder layout** — each input must contain a ROS2 bag and a DXF floorplan:
 
@@ -22,7 +22,6 @@ data/floor_1/
 ```
 
 **Start a complete run:**
-First export Huggingface token, otherwise the piepline will crash.
 ```bash
 export HF_TOKEN= ...   # Hugging Face token with facebook/sam3 access
 
